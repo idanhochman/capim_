@@ -105,7 +105,7 @@ class Collector:
         self._original_topk: Optional[Any] = None
         self._original_eval_posterior: Optional[Any] = None
         self._attached_ea_layer: Optional[Any] = None
-        self._utils_module: Optional[Any] = None
+        self._ea_model_mod: Optional[Any] = None
 
     def attach(self, ea_model: Any) -> None:
         """
@@ -122,16 +122,18 @@ class Collector:
         self._original_topk = ea_layer.topK_genrate
         ea_layer.topK_genrate = self._make_topk_wrapper(ea_layer.topK_genrate)
 
-        # Patch evaluate_posterior at module level
+        # Patch evaluate_posterior in eagle.model.ea_model — that module does
+        # `from .utils import *`, so it holds its own reference to the function.
+        # Patching utils alone has no effect; we must patch the caller's namespace.
         try:
-            import eagle.model.utils as utils_mod
-            self._utils_module = utils_mod
-            self._original_eval_posterior = utils_mod.evaluate_posterior
-            utils_mod.evaluate_posterior = self._make_eval_wrapper(utils_mod.evaluate_posterior)
-        except ImportError:
+            import eagle.model.ea_model as ea_model_mod
+            self._ea_model_mod = ea_model_mod
+            self._original_eval_posterior = ea_model_mod.evaluate_posterior
+            ea_model_mod.evaluate_posterior = self._make_eval_wrapper(ea_model_mod.evaluate_posterior)
+        except (ImportError, AttributeError):
             print(
-                "[Collector] Warning: could not import eagle.model.utils. "
-                "Acceptance flags will not be set."
+                "[Collector] Warning: could not patch evaluate_posterior in "
+                "eagle.model.ea_model. Acceptance flags will not be set."
             )
 
     def detach(self) -> TraceDataset:
@@ -143,8 +145,8 @@ class Collector:
         """
         if self._attached_ea_layer is not None and self._original_topk is not None:
             self._attached_ea_layer.topK_genrate = self._original_topk
-        if self._utils_module is not None and self._original_eval_posterior is not None:
-            self._utils_module.evaluate_posterior = self._original_eval_posterior
+        if self._ea_model_mod is not None and self._original_eval_posterior is not None:
+            self._ea_model_mod.evaluate_posterior = self._original_eval_posterior
 
         td = TraceDataset(
             steps=list(self._steps),
