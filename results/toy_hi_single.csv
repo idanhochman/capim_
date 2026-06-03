@@ -1,0 +1,2 @@
+sigma_th,mu_th,scenario,tokens_per_second,energy_per_token_j,acceptance_rate,mean_accepted_per_step,speedup_vs_ar,energy_reduction_vs_lp,latency_speedup_vs_lp,pim_fraction,npu_fraction,mean_pruned_tree_size,mean_original_tree_size,mean_pruning_ratio,total_latency_s,total_energy_j,total_accepted_tokens,total_steps,mean_false_neg_rate
+-2.0,10,toy_hi,10.819324449495868,0.001893040128,0.36363636363636365,2.0,1.378890875887878,0.9894144337163008,0.9859069762598327,1.0,0.0,5.5,7.0,0.2142857142857143,0.36970885,0.007572160512,4,2,0.0

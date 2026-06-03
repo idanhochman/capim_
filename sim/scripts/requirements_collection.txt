@@ -1,0 +1,26 @@
+# Requirements for running trace collection (collect_traces.py)
+# Install with: pip install -r sim/scripts/requirements_collection.txt
+
+# Core ML stack
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.27.0
+
+# HuggingFace datasets (for Alpaca and GSM8K)
+datasets>=2.18.0
+
+# EAGLE dependencies
+# (EAGLE itself is already cloned in releted-repos/EAGLE — no pip install needed,
+#  just add it to sys.path as done in collect_traces.py)
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+
+# Optional: 4-bit / 8-bit quantization (reduces VRAM from ~16 GB to ~8 GB)
+# Uncomment if your GPU has < 16 GB VRAM:
+# bitsandbytes>=0.43.0
+
+# Optional: faster tokenization
+tiktoken>=0.6.0
+
+# Optional: plotting (for run_simulation.py --plot)
+# matplotlib>=3.7.0
