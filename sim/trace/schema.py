@@ -36,6 +36,7 @@ class TokenNode:
 
     # Position within its layer (used by scheduler to reconstruct tree structure)
     layer_idx: int = 0      # index of this node within its depth layer
+    token_str: str = ""     # human-readable decoded token (e.g. " Paris", "\n")
 
 
 @dataclass
@@ -124,6 +125,7 @@ class TraceDataset:
                         {
                             "depth": n.depth,
                             "token_id": n.token_id,
+                            "token_str": n.token_str,
                             "log_prob": n.log_prob,
                             "cumulative_log_prob": n.cumulative_log_prob,
                             "parent_idx": n.parent_idx,
@@ -151,6 +153,7 @@ class TraceDataset:
                 TokenNode(
                     depth=nd["depth"],
                     token_id=nd["token_id"],
+                    token_str=nd.get("token_str", ""),
                     log_prob=nd["log_prob"],
                     cumulative_log_prob=nd["cumulative_log_prob"],
                     parent_idx=nd["parent_idx"],

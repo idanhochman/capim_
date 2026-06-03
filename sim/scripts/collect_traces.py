@@ -249,6 +249,9 @@ def run_collection(
             print(f"    WARNING: inference failed: {e}")
         finally:
             partial = collector.detach()
+            for step in partial.steps:
+                for node in step.nodes:
+                    node.token_str = tokenizer.decode([node.token_id])
             all_steps.extend(partial.steps)
             print(f"    Collected {len(partial.steps)} steps "
                   f"(total so far: {len(all_steps)})")
