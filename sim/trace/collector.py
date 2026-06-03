@@ -53,8 +53,23 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.nn as nn
 
 from sim.trace.schema import DecodeStepTrace, TokenNode, TraceDataset
+
+
+class _LogSoftmaxCapture(nn.Module):
+    """Wraps an nn.LogSoftmax to intercept outputs into a list for trace collection."""
+
+    def __init__(self, original: nn.Module, sink: list):
+        super().__init__()
+        self.original = original
+        self.sink = sink
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        result = self.original(x)
+        self.sink.append(result.detach().cpu())
+        return result
 
 
 class Collector:
@@ -184,16 +199,8 @@ class Collector:
 
             if hasattr(ea_layer, "logsoftmax"):
                 original_logsoftmax = ea_layer.logsoftmax
-                call_count = [0]
                 depth_raw: List[torch.Tensor] = []
-
-                def intercepted_logsoftmax(x):
-                    result = original_logsoftmax(x)
-                    depth_raw.append(result.detach().cpu())
-                    call_count[0] += 1
-                    return result
-
-                ea_layer.logsoftmax = intercepted_logsoftmax
+                ea_layer.logsoftmax = _LogSoftmaxCapture(original_logsoftmax, depth_raw)
 
             # Call the original function
             result = original_fn(hidden_states, input_ids, head, logits_processor)
