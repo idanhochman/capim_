@@ -266,6 +266,10 @@ class Collector:
         if n == 0:
             return []
 
+        # tree_position_ids[1:] are 1-indexed (sample token = depth 0 is excluded).
+        # Normalise to 0-indexed so depth_raw[depth] is the correct logsoftmax call.
+        depths = [d - 1 for d in depths]
+
         nodes = []
 
         # Recover parent indices from tree_mask
