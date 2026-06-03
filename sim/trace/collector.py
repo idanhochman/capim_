@@ -99,6 +99,7 @@ class Collector:
         self._steps: List[DecodeStepTrace] = []
         self._step_counter: int = 0
         self._pending_nodes: Optional[List[TokenNode]] = None  # set by topK hook
+        self._pending_retrieve_indices: Optional[Any] = None   # set by topK hook
         self._pending_context_len: int = 0
 
         # Saved original methods (for detach)
@@ -215,6 +216,7 @@ class Collector:
             # draft_tokens[0] is the sample token (root); draft_tokens[1:] are the
             # proposed tokens in tree order.
             draft_tokens, retrieve_indices, tree_mask, tree_position_ids = result
+            collector._pending_retrieve_indices = retrieve_indices.cpu()
             tokens_flat = draft_tokens[0, 1:].cpu().tolist()  # exclude sample token
 
             # tree_position_ids[0] = 0 (sample token), tree_position_ids[1:] = depths
@@ -371,21 +373,29 @@ class Collector:
 
             # Mark accepted nodes in the pending tree
             if collector._pending_nodes is not None:
-                # EAGLE-2: accept_length = number of tokens accepted from the
-                # best candidate path.  The accepted tokens are those on the
-                # best_candidate path at depths 0..accept_length-1.
                 al = int(accept_length)
-
-                # Retrieve indices encode paths: retrieve_indices[candidate][depth]
-                # We don't have access to retrieve_indices here, so we use a
-                # heuristic: mark nodes at depths < accept_length as accepted.
-                # This is conservative (may overcount if multiple candidates exist),
-                # but acceptable for our simulation since we care about accept_length
-                # as the primary metric.
                 best_cand_int = int(best_candidate)
-                for node in collector._pending_nodes:
-                    if node.depth < al:
-                        node.accepted = True
+
+                # retrieve_indices[best_candidate] = path of draft_tokens[0] indices
+                # along the accepted candidate, padded with -1.  Values are 1-indexed
+                # into draft_tokens[0] (0 = sample_token), so subtract 1 to get
+                # 0-indexed positions in tokens_flat (= pending_nodes order).
+                ri = collector._pending_retrieve_indices
+                if ri is not None and best_cand_int < ri.shape[0]:
+                    path = ri[best_cand_int].tolist()
+                    accepted_node_indices = set()
+                    for j in range(al):
+                        idx = path[j]
+                        if idx > 0:  # >0 excludes sample_token (0) and padding (-1)
+                            accepted_node_indices.add(idx - 1)
+                    for k, node in enumerate(collector._pending_nodes):
+                        if k in accepted_node_indices:
+                            node.accepted = True
+                else:
+                    # Fallback if retrieve_indices unavailable
+                    for node in collector._pending_nodes:
+                        if node.depth < al:
+                            node.accepted = True
 
                 # Record the step
                 step = DecodeStepTrace(
