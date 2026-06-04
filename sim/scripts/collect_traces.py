@@ -308,8 +308,8 @@ def main():
     parser.add_argument(
         "--ea-model",
         type=str,
-        default="yuhuili/EAGLE2-Qwen2.5-7B-Instruct",
-        help="HuggingFace repo ID or local path for the EAGLE-2 draft model",
+        default="leptonai/EAGLE-Qwen2.5-7B-Instruct",
+        help="HuggingFace repo ID or local path for the EAGLE draft model",
     )
     parser.add_argument(
         "--output-dir",

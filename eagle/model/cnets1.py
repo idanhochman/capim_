@@ -779,6 +779,7 @@ class Model(nn.Module):
         tree_mask = tree_mask.float()[None, None]
         draft_tokens = draft_tokens[None]
 
+        self._capim_scores = scores_list[top_scores_index].detach().cpu()
         del parents_list, scores_list, ss_token, ss_token_list, draft_parents
 
         # with Timer("retrieve"):

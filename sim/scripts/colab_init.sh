@@ -4,7 +4,7 @@
 # Or upload it to Colab and run:
 #   source /content/colab_init.sh
 
-git clone https://github.com/idanhochman/capim_.git /content/capim_
+#git clone https://github.com/idanhochman/capim_.git /content/capim_
 
 pip install bitsandbytes
 pip install "transformers<5.0.0"
