@@ -145,12 +145,15 @@ class Collector:
             # The direct parent is the second-largest True index in row i
             # (largest is always self, second-largest is direct parent).
             parent_idx_map: Dict[int, int] = {}
-            mask = tree_mask[0, 0].float()  # strip batch+head dims [1,1,n+1,n+1] → [n+1,n+1]; float for topk
+            mask = tree_mask[0, 0].bool()  # strip batch+head dims [1,1,n+1,n+1] → [n+1,n+1]
             # mask is (n+1) x (n+1): index 0 = sample token (root), indices 1..n = draft tokens.
             # We skip index 0 and convert to 0-indexed tokens_flat space via i-1.
+            # nonzero returns ascending indices: last = self (i), second-to-last = direct parent.
+            # Parents always have smaller indices than children (tree built in depth order).
             for i in range(1, n + 1):
-                top2 = torch.topk(mask[i], 2).indices
-                direct_parent = int(top2[1]) - 1  # convert to 0-indexed tokens space
+                ancestors = torch.nonzero(mask[i], as_tuple=False).squeeze(1)
+                # ancestors[-1]=self(i), ancestors[-2]=direct parent (or root=0 for depth-0 nodes)
+                direct_parent = int(ancestors[-2]) - 1  # convert to 0-indexed tokens space
                 parent_idx_map[i - 1] = direct_parent
 
             # Build nodes.
