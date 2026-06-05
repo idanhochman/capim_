@@ -80,6 +80,50 @@ def print_correlation_table(results: list[dict], label: str = ""):
     print(f"{'='*55}")
 
 
+def per_depth_correlation(trace: TraceDataset) -> dict[int, list[dict]]:
+    """
+    Correlation table broken down by depth level.
+    Returns {depth: [bucket_results]} so we can see whether the
+    log_prob-acceptance relationship holds within each depth independently.
+    """
+    from collections import defaultdict
+    depth_nodes: dict[int, list] = defaultdict(list)
+    for s in trace.steps:
+        for n in s.nodes:
+            if not math.isnan(n.log_prob):
+                depth_nodes[n.depth].append(n)
+
+    result = {}
+    for depth in sorted(depth_nodes):
+        nodes = depth_nodes[depth]
+        buckets = []
+        for lo, hi in BUCKETS:
+            bucket = [n for n in nodes if lo <= n.log_prob < hi]
+            if not bucket:
+                continue
+            acc = sum(1 for n in bucket if n.accepted) / len(bucket)
+            buckets.append({"lo": lo, "hi": hi, "n": len(bucket), "acceptance_rate": acc})
+        result[depth] = buckets
+    return result
+
+
+def print_per_depth_correlation(data: dict[int, list[dict]], label: str = ""):
+    width = 60
+    if label:
+        print(f"\n{'='*width}")
+        print(f"  {label} — confidence vs acceptance per depth")
+    print(f"{'='*width}")
+    for depth, buckets in data.items():
+        if not buckets:
+            continue
+        print(f"\n  depth {depth}:")
+        print(f"  {'log_prob range':<20} {'n nodes':>8}  {'acceptance':>10}")
+        print(f"  {'-'*20}  {'-'*8}  {'-'*10}")
+        for r in buckets:
+            print(f"  [{r['lo']:4d}, {r['hi']:3d})          {r['n']:>8,}  {r['acceptance_rate']:>9.1%}")
+    print(f"\n{'='*width}")
+
+
 def depth_breakdown(trace: TraceDataset) -> dict:
     """Acceptance rate per depth level."""
     from collections import defaultdict
@@ -183,6 +227,7 @@ def main():
     results1 = correlation_table(trace1, label1)
     print_correlation_table(results1, f"{label1} — confidence vs acceptance")
     print_depth_breakdown(depth_breakdown(trace1), label1)
+    print_per_depth_correlation(per_depth_correlation(trace1), label1)
 
     if args.plot:
         plot_path = os.path.join(args.output_dir, f"{label1}_correlation.png")
@@ -196,6 +241,7 @@ def main():
         results2 = correlation_table(trace2, label2)
         print_correlation_table(results2, f"{label2} — confidence vs acceptance")
         print_depth_breakdown(depth_breakdown(trace2), label2)
+        print_per_depth_correlation(per_depth_correlation(trace2), label2)
         if args.plot:
             plot_path = os.path.join(args.output_dir, f"{label2}_correlation.png")
             plot_correlation(results2, label2, plot_path)
