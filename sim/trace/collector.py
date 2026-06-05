@@ -202,7 +202,11 @@ class Collector:
                 try:
                     path = ri[best_cand_int].tolist()
                     accepted_node_indices = set()
-                    for j in range(al):
+                    # retrieve_indices[0] = sample_token (index 0, always skipped).
+                    # Real draft tokens start at index 1, so iterate al+1 entries.
+                    for j in range(al + 1):
+                        if j >= len(path):
+                            break
                         idx = path[j]
                         if idx > 0:  # exclude sample_token (0) and padding (-1)
                             accepted_node_indices.add(idx - 1)
