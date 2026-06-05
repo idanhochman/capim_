@@ -250,6 +250,7 @@ def run_collection(
         finally:
             partial = collector.detach()
             for step in partial.steps:
+                step.sample_token_str = tokenizer.decode([step.sample_token_id])
                 for node in step.nodes:
                     node.token_str = tokenizer.decode([node.token_id])
             all_steps.extend(partial.steps)

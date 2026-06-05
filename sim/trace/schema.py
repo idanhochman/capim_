@@ -55,6 +55,8 @@ class DecodeStepTrace:
                                     # bonus token from autoregressive fallback)
     dataset: str                    # "alpaca" or "gsm8k"
     prompt_id: int                  # index of the source prompt within the dataset
+    sample_token_id: int = 0        # vocabulary index of the root token (last accepted token)
+    sample_token_str: str = ""      # human-readable root token (e.g. " The")
 
     @property
     def tree_size(self) -> int:
@@ -121,6 +123,8 @@ class TraceDataset:
                     "accepted_length": s.accepted_length,
                     "dataset": s.dataset,
                     "prompt_id": s.prompt_id,
+                    "sample_token_id": s.sample_token_id,
+                    "sample_token_str": s.sample_token_str,
                     "nodes": [
                         {
                             "depth": n.depth,
@@ -170,6 +174,8 @@ class TraceDataset:
                     accepted_length=sd["accepted_length"],
                     dataset=sd["dataset"],
                     prompt_id=sd["prompt_id"],
+                    sample_token_id=sd.get("sample_token_id", 0),
+                    sample_token_str=sd.get("sample_token_str", ""),
                 )
             )
 

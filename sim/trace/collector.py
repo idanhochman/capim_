@@ -62,6 +62,7 @@ class Collector:
         self._pending_nodes: Optional[List[TokenNode]] = None
         self._pending_retrieve_indices: Optional[Any] = None
         self._pending_context_len: int = 0
+        self._pending_sample_token_id: int = 0
 
         # Saved originals (for detach)
         self._original_topk: Optional[Any] = None
@@ -121,6 +122,7 @@ class Collector:
         def wrapper(hidden_states, input_ids, head, logits_processor):
             context_len = input_ids.shape[1] if hasattr(input_ids, "shape") else 0
             collector._pending_context_len = int(context_len)
+            collector._pending_sample_token_id = int(input_ids[0, -1].item()) if hasattr(input_ids, "shape") else 0
 
             result = original_fn(hidden_states, input_ids, head, logits_processor)
 
@@ -226,6 +228,7 @@ class Collector:
                     accepted_length=al,
                     dataset=collector.dataset,
                     prompt_id=collector.prompt_id,
+                    sample_token_id=collector._pending_sample_token_id,
                 )
                 collector._steps.append(step)
                 collector._step_counter += 1
