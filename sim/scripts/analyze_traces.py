@@ -46,6 +46,18 @@ BUCKETS = [
     (-1,    0),
 ]
 
+# Buckets for cumulative_log_prob (path probability from root to node).
+# Wider range than per-node: deep nodes accumulate multiple negative log_probs.
+# Calibrated from Alpaca trace: p10=-5.6, p50=-4.1, p90=-2.2, min≈-30.
+CUMULATIVE_BUCKETS = [
+    (-100, -10),
+    (-10,  -6),
+    (-6,   -5),
+    (-5,   -4),
+    (-4,   -3),
+    (-3,    0),
+]
+
 
 def correlation_table(trace: TraceDataset, label: str = "") -> list[dict]:
     """
@@ -124,6 +136,41 @@ def print_per_depth_correlation(data: dict[int, list[dict]], label: str = ""):
     print(f"\n{'='*width}")
 
 
+def cumulative_correlation_table(trace: TraceDataset) -> list[dict]:
+    """
+    Group all nodes by cumulative_log_prob bucket and compute acceptance rate.
+
+    This is the calibration table for CAPIM's σ_th pruner, which compares
+    cumulative_log_prob against σ_th. Unlike per-node log_prob, cumulative
+    encodes both confidence and depth, making it the correct pruning signal.
+    """
+    all_nodes = [n for s in trace.steps for n in s.nodes]
+    results = []
+    for lo, hi in CUMULATIVE_BUCKETS:
+        bucket = [
+            n for n in all_nodes
+            if not math.isnan(n.cumulative_log_prob) and lo <= n.cumulative_log_prob < hi
+        ]
+        if not bucket:
+            continue
+        acc = sum(1 for n in bucket if n.accepted) / len(bucket)
+        results.append({"lo": lo, "hi": hi, "n": len(bucket), "acceptance_rate": acc})
+    return results
+
+
+def print_cumulative_correlation_table(results: list[dict], label: str = ""):
+    width = 55
+    if label:
+        print(f"\n{'='*width}")
+        print(f"  {label}")
+    print(f"{'='*width}")
+    print(f"  {'cumulative log_prob range':<26} {'n nodes':>8}  {'acceptance':>10}")
+    print(f"  {'-'*26}  {'-'*8}  {'-'*10}")
+    for r in results:
+        print(f"  [{r['lo']:4d}, {r['hi']:3d})                    {r['n']:>8,}  {r['acceptance_rate']:>9.1%}")
+    print(f"{'='*width}")
+
+
 def depth_breakdown(trace: TraceDataset) -> dict:
     """Acceptance rate per depth level."""
     from collections import defaultdict
@@ -158,12 +205,13 @@ def print_summary(trace: TraceDataset, label: str = ""):
     )
     total_nodes = sum(len(s.nodes) for s in trace.steps)
     print(f"\nTrace summary ({label or 'unnamed'}):")
-    print(f"  Steps           : {len(trace.steps)}")
-    print(f"  Total nodes     : {total_nodes:,}")
-    print(f"  NaN log_probs   : {nan_count:,} ({100*nan_count/total_nodes:.1f}%)")
-    print(f"  Mean tree size  : {trace.mean_tree_size:.1f}")
-    print(f"  Mean accepted   : {trace.mean_accepted_length:.2f} tokens/step")
-    print(f"  Acceptance rate : {trace.mean_acceptance_rate*100:.1f}% (per node)")
+    print(f"  Steps                      : {len(trace.steps)}")
+    print(f"  Total nodes                : {total_nodes:,}")
+    print(f"  NaN log_probs              : {nan_count:,} ({100*nan_count/total_nodes:.1f}%)")
+    print(f"  Mean tree size             : {trace.mean_tree_size:.1f}")
+    print(f"  Mean accepted (draft only) : {trace.mean_accepted_length:.2f} tokens/step")
+    print(f"  Mean tokens generated/step : {trace.mean_accepted_length + 1:.2f}  (= speedup vs autoregressive)")
+    print(f"  Acceptance rate            : {trace.mean_acceptance_rate*100:.1f}% (per node)")
 
 
 def plot_correlation(results: list[dict], label: str, output_path: str):
@@ -225,7 +273,9 @@ def main():
 
     print_summary(trace1, label1)
     results1 = correlation_table(trace1, label1)
-    print_correlation_table(results1, f"{label1} — confidence vs acceptance")
+    print_correlation_table(results1, f"{label1} — per-node confidence vs acceptance")
+    cum_results1 = cumulative_correlation_table(trace1)
+    print_cumulative_correlation_table(cum_results1, f"{label1} — cumulative confidence vs acceptance (σ_th signal)")
     print_depth_breakdown(depth_breakdown(trace1), label1)
     print_per_depth_correlation(per_depth_correlation(trace1), label1)
 
@@ -239,7 +289,9 @@ def main():
         label2 = os.path.splitext(os.path.basename(args.trace2))[0]
         print_summary(trace2, label2)
         results2 = correlation_table(trace2, label2)
-        print_correlation_table(results2, f"{label2} — confidence vs acceptance")
+        print_correlation_table(results2, f"{label2} — per-node confidence vs acceptance")
+        cum_results2 = cumulative_correlation_table(trace2)
+        print_cumulative_correlation_table(cum_results2, f"{label2} — cumulative confidence vs acceptance (σ_th signal)")
         print_depth_breakdown(depth_breakdown(trace2), label2)
         print_per_depth_correlation(per_depth_correlation(trace2), label2)
         if args.plot:

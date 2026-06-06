@@ -132,7 +132,8 @@ def sigma_sweep(
         trace: TraceDataset.
         target_model: Target model config.
         draft_model: Draft model config.
-        sigma_values: List of σ_th values to evaluate (log-prob, e.g. [-5, -3, -2, -1]).
+        sigma_values: List of σ_th values to evaluate (cumulative log-prob,
+                      e.g. [-8, -6, -5, -4.5, -4, -3.5, -3, -2.5]).
         mu_th: Fixed μ_th during the sweep.
         scenario: Scenario label.
 
