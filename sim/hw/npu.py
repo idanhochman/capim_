@@ -47,7 +47,7 @@ def _compute_flops_verify(model: ModelConfig, batch_size: int, seq_len: int) -> 
       - Attention: 2 × n_layers × n_heads × seq_len × head_dim × batch_size
         (reading KV-cache for each query token)
     """
-    w = model.weight_bytes() / model.word_size_bytes   # parameter count
+    w = model.weight_bytes() / model.bytes_per_param   # parameter count
     linear_flops = 2 * w * batch_size
 
     attn_flops = (

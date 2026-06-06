@@ -136,7 +136,7 @@ def _concurrent_verify(
     # NPU FC path: weight matrix reads from DRAM + matrix multiplications
     # ------------------------------------------------------------------
     fc_weight_bytes = target_model.weight_bytes()
-    fc_params = fc_weight_bytes / target_model.word_size_bytes
+    fc_params = fc_weight_bytes / target_model.bytes_per_param
     fc_flops = 2 * fc_params * effective_tree   # each weight × effective_tree queries
 
     t_npu_bw = fc_weight_bytes / NPU_OFFCHIP_BW
@@ -199,7 +199,7 @@ def simulate_lp_spec(
     # 1. Draft in PIM: MEDUSA heads (≈5% of target weight, batch=1 per candidate)
     #    Roofline: compute-bound (same analysis as EAGLE-2 draft model).
     medusa_weight_bytes = target_model.weight_bytes() * MEDUSA_HEAD_OVERHEAD_RATIO
-    medusa_params = medusa_weight_bytes / target_model.word_size_bytes
+    medusa_params = medusa_weight_bytes / target_model.bytes_per_param
     bw_lat = (medusa_weight_bytes * medusa_tree_size) / PIM_INTERNAL_BW
     compute_lat = (2.0 * medusa_params * medusa_tree_size) / PIM_INT8_GOPS
     t_draft = max(bw_lat, compute_lat)

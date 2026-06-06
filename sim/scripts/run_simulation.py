@@ -37,7 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run CAPIM simulation")
     parser.add_argument("--trace", type=str, required=True,
                         help="Path to TraceDataset JSON (from collect_traces.py)")
-    parser.add_argument("--sigma-th", type=float, default=-2.0,
+    parser.add_argument("--sigma-th", type=float, default=-4.0,
                         help="Log-prob pruning threshold (default: -2.0)")
     parser.add_argument("--mu-th", type=int, default=10,
                         help="Tree size PIM/NPU routing threshold (default: 10)")
@@ -51,7 +51,7 @@ def main():
     args = parser.parse_args()
 
     from sim.trace.schema import TraceDataset
-    from sim.config.models import QWEN2_5_7B, QWEN2_5_0_5B
+    from sim.config.models import QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B
     from sim.baselines.autoregressive import simulate_autoregressive_from_trace
     from sim.baselines.lp_spec import simulate_lp_spec_from_trace
     from sim.simulation import simulate_capim
@@ -84,7 +84,7 @@ def main():
     if args.sweep == "none":
         # Single-point evaluation
         capim = simulate_capim(
-            trace, QWEN2_5_7B, QWEN2_5_0_5B,
+            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
             sigma_th=args.sigma_th, mu_th=args.mu_th,
             scenario=scenario, **baseline_kwargs,
         )
@@ -101,10 +101,12 @@ def main():
 
     elif args.sweep == "sigma":
         import math
-        sigma_values = [float("-inf"), -5.0, -4.0, -3.0, -2.5, -2.0, -1.5, -1.0, -0.5]
+        # Calibrated from Alpaca trace cumulative_log_prob distribution:
+        # p10=-5.6, p50=-4.1, p90=-2.2. Sweep spans no-pruning to aggressive.
+        sigma_values = [float("-inf"), -8.0, -6.0, -5.0, -4.5, -4.0, -3.5, -3.0, -2.5]
         print(f"\nSweeping σ_th over {sigma_values}...")
         results = sigma_sweep(
-            trace, QWEN2_5_7B, QWEN2_5_0_5B,
+            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
             sigma_values=sigma_values, mu_th=args.mu_th,
             scenario=scenario, **baseline_kwargs,
         )
@@ -120,7 +122,7 @@ def main():
         mu_values = [1, 3, 5, 8, 10, 15, 20, 30, 50, 100]
         print(f"\nSweeping μ_th over {mu_values}...")
         results = mu_sweep(
-            trace, QWEN2_5_7B, QWEN2_5_0_5B,
+            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
             mu_values=mu_values, sigma_th=args.sigma_th,
             scenario=scenario, **baseline_kwargs,
         )
@@ -134,11 +136,11 @@ def main():
 
     elif args.sweep == "joint":
         import math
-        sigma_values = [float("-inf"), -3.0, -2.0, -1.0]
+        sigma_values = [float("-inf"), -6.0, -4.5, -3.0]
         mu_values = [5, 10, 20, 50]
         print(f"\n2D sweep: σ_th × μ_th ({len(sigma_values)}×{len(mu_values)} grid)...")
         grid = joint_sweep(
-            trace, QWEN2_5_7B, QWEN2_5_0_5B,
+            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
             sigma_values=sigma_values, mu_values=mu_values,
             scenario=scenario, **baseline_kwargs,
         )

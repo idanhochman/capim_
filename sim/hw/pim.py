@@ -90,7 +90,7 @@ def draft_latency(model: ModelConfig, tree_size: int) -> float:
     if tree_size <= 0:
         return 0.0
     w = model.weight_bytes()
-    params = w / model.word_size_bytes
+    params = w / model.bytes_per_param
     return _roofline(
         bw_bytes=w * tree_size,
         flops=2.0 * params * tree_size,
@@ -145,7 +145,7 @@ def verify_latency(model: ModelConfig, batch_size: int) -> float:
     if batch_size <= 0:
         return 0.0
     w = model.weight_bytes()
-    params = w / model.word_size_bytes
+    params = w / model.bytes_per_param
     passes = ceil(batch_size / PIM_NALU)
     return _roofline(
         bw_bytes=w * passes,
