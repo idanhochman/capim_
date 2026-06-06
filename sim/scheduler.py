@@ -3,8 +3,7 @@ CAPIM Scheduler: confidence-aware pruner and PIM/NPU router.
 
 Two responsibilities:
   1. prune_tree(step, sigma_th) — simulate live confidence-gated pruning.
-     Walks the draft tree and terminates branches where log_prob < sigma_th.
-     Children of pruned nodes are automatically removed.
+     Terminates branches where cumulative_log_prob < sigma_th.
 
   2. route(mu, mu_th) — decide whether verification runs in PIM or NPU.
      PIM if μ < μ_th (small, low-confidence tree).
@@ -14,27 +13,31 @@ Both functions operate on the trace schema types (TokenNode, DecodeStepTrace)
 and have no hardware-model dependencies — they are pure algorithmic logic.
 
 Design notes:
-- sigma_th is a log-probability threshold (negative float, e.g. −2.3).
-  A node is pruned if its per-token log_prob < sigma_th.
+- sigma_th is a cumulative log-probability threshold (negative float, e.g. −4.0).
+  A node is pruned if its cumulative_log_prob < sigma_th, where
+  cumulative_log_prob is the sum of log_probs from root to this node —
+  equivalent to the log joint probability of the entire path.
   At sigma_th = −∞ (float('-inf')), no pruning occurs → baseline behaviour.
-  At sigma_th = 0.0 (log(1.0)), all non-certain tokens are pruned.
+  At sigma_th = 0.0, only paths with probability 1.0 survive (prunes everything).
 
-- Parent propagation: if a node at depth d is pruned, all of its children
-  (depth d+1, d+2, …) that trace their lineage through that node are also
-  pruned.  We implement this by tracking which parent indices survive at each
-  depth level.
+- No parent propagation needed: cumulative_log_prob is strictly monotonically
+  decreasing with depth (every step adds a negative log_prob). A node that
+  fails the threshold guarantees all its descendants will also fail, so each
+  node can be checked independently in a single pass.
 
-- The pruner returns a flat list of surviving TokenNode objects.  The tree
-  size μ = len(surviving_nodes).
+- Using cumulative rather than per-node log_prob avoids the "collateral damage"
+  of per-node pruning, where a single uncertain intermediate step would kill an
+  otherwise high-quality deep path. Cumulative evaluates path quality as a whole.
+
+- The pruner returns a flat list of surviving TokenNode objects.
+  The tree size μ = len(surviving_nodes).
 
 - Acceptance counting: we count accepted tokens in the pruned tree as the
-  number of surviving nodes with accepted=True.  This is an optimistic but
-  consistent metric — a pruned (un-accepted) node would never have been
-  accepted anyway (per EAGLE-2's correlation analysis), but we also track
-  how many accepted nodes we prune incorrectly (false negatives).
+  number of surviving nodes with accepted=True. We also track how many
+  accepted nodes were incorrectly pruned (false negatives).
 """
 
-from typing import Dict, List, Literal, Set, Tuple
+from typing import List, Literal
 
 from sim.trace.schema import DecodeStepTrace, TokenNode
 
@@ -46,14 +49,17 @@ def prune_tree(
     """
     Simulate live confidence-gated pruning on a draft tree.
 
-    A node is eliminated if:
-      (a) its own log_prob < sigma_th  [direct threshold violation], OR
-      (b) its parent was already eliminated  [propagated pruning]
+    A node is eliminated if its cumulative_log_prob < sigma_th, where
+    cumulative_log_prob is the sum of log_probs from the root to this node.
+
+    No parent propagation is required: cumulative_log_prob is strictly
+    monotonically decreasing with depth, so a failing node guarantees all
+    its descendants also fail. Each node is checked independently.
 
     Args:
         step: A single decode step trace containing the full draft tree.
-        sigma_th: Log-probability threshold.  Any node with log_prob < sigma_th
-                  is pruned along with all its descendants.
+        sigma_th: Cumulative log-probability threshold. Nodes whose path
+                  probability falls below this are pruned.
                   Use float('-inf') to disable pruning (σ_th = −∞).
 
     Returns:
@@ -62,45 +68,10 @@ def prune_tree(
     if not step.nodes:
         return []
 
-    # Fast path: no pruning
     if sigma_th == float("-inf"):
         return list(step.nodes)
 
-    # Group nodes by depth for efficient traversal
-    max_depth = step.max_depth
-    layers: Dict[int, List[TokenNode]] = {d: [] for d in range(max_depth + 1)}
-    for node in step.nodes:
-        layers[node.depth].append(node)
-
-    # Sort each layer by layer_idx for deterministic ordering
-    for d in layers:
-        layers[d].sort(key=lambda n: n.layer_idx)
-
-    # surviving_layer_indices[d] = set of layer_idx values that survived at depth d
-    # Depth -1 (root) always survives
-    surviving_at_depth: Dict[int, Set[int]] = {-1: {-1}}  # root is always alive
-
-    surviving_nodes: List[TokenNode] = []
-
-    for d in range(max_depth + 1):
-        alive_parents = surviving_at_depth.get(d - 1, set())
-        alive_at_d: Set[int] = set()
-
-        for node in layers[d]:
-            # Check 1: parent must have survived
-            parent_key = node.parent_idx if d > 0 else -1
-            parent_alive = parent_key in alive_parents
-
-            # Check 2: this node's own confidence must clear the threshold
-            node_passes = node.log_prob >= sigma_th
-
-            if parent_alive and node_passes:
-                surviving_nodes.append(node)
-                alive_at_d.add(node.layer_idx)
-
-        surviving_at_depth[d] = alive_at_d
-
-    return surviving_nodes
+    return [n for n in step.nodes if n.cumulative_log_prob >= sigma_th]
 
 
 def route(mu: int, mu_th: int) -> Literal["PIM", "NPU"]:
