@@ -1,10 +1,46 @@
 """
 Hardware constants for CAPIM simulation.
 
-All values sourced from LP-Spec Table II and cited works:
-  [24] AttAcc (PIM energy figures)
-  [26] McDRAM (DRAM internal energy)
-  LP-Spec Table II (bandwidth, compute, capacity)
+Primary source: LP-Spec Table II (bandwidth, compute, capacity).
+Energy values are derived from ratios stated in LP-Spec and anchored to
+SpecPIM's measured figures, as follows:
+
+  Off-chip transfer energy (5.4 pJ/bit):
+    SpecPIM (ASPLOS 2024) Table 2 states 5.47 pJ/bit for external HBM
+    bandwidth. Used as the off-chip anchor for LPDDR5-PIM.
+
+  Internal DRAM access energy (0.8 pJ/bit):
+    LP-Spec Section II-A states "data transfers within DRAM consume only
+    15% of the energy required for off-DRAM transfers [23]."
+    Derived: 0.15 × 5.4 pJ/bit = 0.81 pJ/bit → rounded to 0.8 pJ/bit.
+
+  NPU INT8 MAC energy (0.5 pJ/op):
+    LP-Spec Section IV-B states "an INT8 MAC unit ... consumes 63.6% of
+    the energy of a FP16 MAC in 20 nm DRAM process [32]."
+    [32] = Samsung ISCA 2021 (Lee et al., "Hardware Architecture and
+    Software Stack for PIM Based on Commercial DRAM Technology").
+    Table I of that paper gives values normalised to INT16 MAC (=1.0):
+    INT8(32-bit Acc.)=0.77, FP16=1.21 → ratio 0.77/1.21 = 63.6%. VERIFIED.
+    0.5 pJ/op is an approximation consistent with LP-Spec's methodology.
+
+# TODO (energy verification):
+#   VERIFIED:
+#     - 5.47 pJ/bit off-chip: SpecPIM (ASPLOS 2024) Table 2, explicit value.
+#     - 15% internal/off-chip ratio: LP-Spec Sec. II-A [23], explicit quote.
+#     - 63.6% INT8/FP16 ratio: Samsung ISCA 2021 Table I (normalised to INT16).
+#
+#   NOT VERIFIED (approximations):
+#     - 5.4 vs 5.47 pJ/bit: SpecPIM value is for HBM, not LPDDR5. No LPDDR5
+#       specific off-chip energy figure found in any cited paper.
+#     - 0.5 pJ/op INT8 MAC: requires absolute INT16 MAC energy at 20 nm as
+#       baseline. Samsung ISCA 2021 Table I gives only relative (normalised)
+#       values; absolute baseline not stated in any cited paper.
+#
+#   TODO:
+#     - Verify 5.4 pJ/bit against an LPDDR5-specific source (not HBM).
+#     - Find absolute INT16 MAC energy at 20 nm (Horowitz 2014 ISSCC is the
+#       standard reference; check Table 1 of that paper).
+#     - If absolute INT16 value found, recompute: INT8 = 0.77 × INT16 pJ/op.
 """
 
 # ---------------------------------------------------------------------------
@@ -33,18 +69,21 @@ PIM_CAPACITY_BYTES: float = 16e9        # bytes
 PIM_NALU: int = 1                        # treat as 1 for GEMV baseline; refine later
 
 # ---------------------------------------------------------------------------
-# Energy constants
-# Source: AttAcc [24] and McDRAM [26] as cited by LP-Spec
+# Energy constants — see module docstring for full derivation
 # ---------------------------------------------------------------------------
 
 # Internal DRAM access energy (within PIM banks)
-PIM_ENERGY_PJ_PER_BIT: float = 0.8     # pJ/bit   (McDRAM [26])
+# Derived: 15% x 5.4 pJ/bit (LP-Spec Sec. II-A [23])
+PIM_ENERGY_PJ_PER_BIT: float = 0.8     # pJ/bit
 
-# Off-chip transfer energy (PIM → NPU over external I/O)
-OFFCHIP_ENERGY_PJ_PER_BIT: float = 5.4 # pJ/bit   (AttAcc [24])
+# Off-chip transfer energy (PIM -> NPU over external I/O)
+# Source: SpecPIM Table 2 (5.47 pJ/bit for external HBM bandwidth)
+OFFCHIP_ENERGY_PJ_PER_BIT: float = 5.4 # pJ/bit
 
 # INT8 MAC energy on the NPU
-NPU_ENERGY_PJ_PER_INT8_OP: float = 0.5 # pJ/op    (AttAcc [24])
+# 63.6% of FP16 MAC energy (Samsung ISCA 2021 Table I, LP-Spec Sec. IV-B [32])
+# Absolute baseline unverified — 0.5 pJ/op is an approximation (see docstring)
+NPU_ENERGY_PJ_PER_INT8_OP: float = 0.5 # pJ/op
 
 # ---------------------------------------------------------------------------
 # Mobile NPU
