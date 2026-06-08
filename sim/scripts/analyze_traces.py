@@ -50,12 +50,13 @@ BUCKETS = [
 # Wider range than per-node: deep nodes accumulate multiple negative log_probs.
 # Calibrated from Alpaca trace: p10=-5.6, p50=-4.1, p90=-2.2, min≈-30.
 CUMULATIVE_BUCKETS = [
-    (-100, -10),
-    (-10,  -6),
+    (-100, -6),
     (-6,   -5),
     (-5,   -4),
     (-4,   -3),
-    (-3,    0),
+    (-3,   -2),
+    (-2,   -1),
+    (-1,    0),
 ]
 
 
@@ -235,6 +236,40 @@ def plot_correlation(results: list[dict], label: str, output_path: str):
     plt.close()
 
 
+def plot_cumulative_correlation(results: list[dict], label: str, output_path: str):
+    """
+    Bar chart of cumulative_log_prob bucket vs acceptance rate.
+    X-axis uses the same log-prob bucket notation as plot_correlation.
+    """
+    import matplotlib.pyplot as plt
+
+    x_labels = [f"[{r['lo']}, {r['hi']})" for r in results]
+    rates = [r["acceptance_rate"] * 100 for r in results]
+    counts = [r["n"] for r in results]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bars = ax.bar(x_labels, rates, color="steelblue", edgecolor="black", linewidth=0.6)
+
+    for bar, rate, count in zip(bars, rates, counts):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                f"{rate:.1f}%", ha="center", va="bottom", fontsize=10, fontweight="bold")
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() / 2,
+                f"n={count//1000}K", ha="center", va="center", fontsize=8, color="white")
+
+    ax.set_xlabel("Cumulative log_prob bucket  (low confidence → high confidence)", fontsize=11)
+    ax.set_ylabel("Acceptance rate (%)", fontsize=11)
+    ax.set_title(
+        f"Cumulative Path Confidence vs Acceptance Rate\n{label}",
+        fontsize=12,
+    )
+    ax.set_ylim(0, max(rates) * 1.25)
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -282,6 +317,8 @@ def main():
     if args.plot:
         plot_path = os.path.join(args.output_dir, f"{label1}_correlation.png")
         plot_correlation(results1, label1, plot_path)
+        cum_plot_path = os.path.join(args.output_dir, f"{label1}_cumulative_correlation.png")
+        plot_cumulative_correlation(cum_results1, label1, cum_plot_path)
 
     # Optional second trace
     if args.trace2:
@@ -297,6 +334,8 @@ def main():
         if args.plot:
             plot_path = os.path.join(args.output_dir, f"{label2}_correlation.png")
             plot_correlation(results2, label2, plot_path)
+            cum_plot_path = os.path.join(args.output_dir, f"{label2}_cumulative_correlation.png")
+            plot_cumulative_correlation(cum_results2, label2, cum_plot_path)
 
 
 if __name__ == "__main__":
