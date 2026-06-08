@@ -5,32 +5,38 @@ Downloads models and datasets, runs instrumented EAGLE-2 inference, and
 saves a TraceDataset JSON for each evaluation scenario.
 
 Requirements:
-  - A CUDA GPU with at least 16 GB VRAM (for Qwen2.5-7B in FP16)
+  - A CUDA GPU with at least 16 GB VRAM (FP16)
     OR 10 GB VRAM (with 4-bit quantization via bitsandbytes)
   - ~20 GB free disk space for models
   - The packages listed in requirements_collection.txt
 
 Usage:
-    # Sanity check: 20 built-in prompts, no dataset download needed (~30 min on T4)
-    python sim/scripts/collect_traces.py --sanity
-
-    # Collect Alpaca traces (matches LP-Spec evaluation conditions)
+    # Qwen2.5-7B (default) — Alpaca traces
     python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 200
 
-    # Collect GSM8K traces (math reasoning)
-    python sim/scripts/collect_traces.py --dataset gsm8k --n-prompts 200
+    # Vicuna-7B — same prompts, for direct LP-Spec comparison
+    python sim/scripts/collect_traces.py --model-family vicuna7b --dataset alpaca --n-prompts 200
+
+    # Sanity check: 20 built-in prompts, no dataset download needed
+    python sim/scripts/collect_traces.py --sanity
+    python sim/scripts/collect_traces.py --model-family vicuna7b --sanity
 
     # Dry run: check everything loads without running full inference
     python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 3 --dry-run
 
-Models downloaded automatically from HuggingFace on first run:
-    Target : Qwen/Qwen2.5-7B-Instruct          (~15 GB FP16, ~8 GB INT8/4-bit)
-    Draft  : yuhuili/EAGLE2-Qwen2.5-7B-Instruct (~1 GB)
+Model families (set via --model-family):
+    qwen25    Target : Qwen/Qwen2.5-7B-Instruct          (~15 GB FP16)
+              Draft  : leptonai/EAGLE-Qwen2.5-7B-Instruct (~1 GB)
+    vicuna7b  Target : lmsys/vicuna-7b-v1.3               (~13 GB FP16)
+              Draft  : yuhuili/EAGLE-Vicuna-7B-v1.3        (~1 GB)
 
-Output:
-    traces/qwen25_sanity.json   (--sanity)
-    traces/qwen25_alpaca.json   (--dataset alpaca)
-    traces/qwen25_gsm8k.json    (--dataset gsm8k)
+--base-model and --ea-model override the model-family defaults.
+
+Output (examples):
+    traces/qwen25_alpaca.json
+    traces/qwen25_gsm8k.json
+    traces/vicuna7b_alpaca.json
+    traces/vicuna7b_gsm8k.json
 """
 
 import argparse
@@ -92,6 +98,43 @@ DATASET_LOADERS = {
     "alpaca": load_alpaca_prompts,
     "gsm8k": load_gsm8k_prompts,
 }
+
+# ---------------------------------------------------------------------------
+# Model family configurations
+# ---------------------------------------------------------------------------
+
+MODEL_CONFIGS = {
+    "qwen25": {
+        "base_model": "Qwen/Qwen2.5-7B-Instruct",
+        "ea_model":   "leptonai/EAGLE-Qwen2.5-7B-Instruct",
+        "output_prefix": "qwen25",
+        "prompt_format": "chat_template",  # use tokenizer.apply_chat_template
+    },
+    "vicuna7b": {
+        "base_model": "lmsys/vicuna-7b-v1.3",
+        "ea_model":   "yuhuili/EAGLE-Vicuna-7B-v1.3",
+        "output_prefix": "vicuna7b",
+        "prompt_format": "vicuna",         # manual format (no chat_template in tokenizer)
+    },
+}
+
+
+def format_prompt(prompt: str, tokenizer, prompt_format: str) -> str:
+    """Format a raw prompt string into model-specific input text."""
+    if prompt_format == "chat_template":
+        messages = [{"role": "user", "content": prompt}]
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    elif prompt_format == "vicuna":
+        # Standard Vicuna v1.3 conversation format (FastChat convention)
+        return (
+            "A chat between a curious user and an artificial intelligence assistant. "
+            "The assistant gives helpful, detailed, and polite answers to the user's questions.\n\n"
+            f"USER: {prompt}\nASSISTANT:"
+        )
+    else:
+        raise ValueError(f"Unknown prompt_format: {prompt_format!r}")
 
 # ---------------------------------------------------------------------------
 # Sanity prompts (no dataset download required)
@@ -195,6 +238,8 @@ def run_collection(
     tokenizer,
     prompts: list[str],
     dataset: str,
+    prompt_format: str = "chat_template",
+    model_draft_name: str = "EAGLE2",
     max_new_tokens: int = 200,
     dry_run: bool = False,
 ) -> "TraceDataset":
@@ -222,16 +267,12 @@ def run_collection(
             dataset=dataset,
             prompt_id=i,
             model_target=model.base_model_name_or_path,
-            model_draft="EAGLE2",
+            model_draft=model_draft_name,
         )
         collector.attach(model)
 
         try:
-            # Format with chat template for instruction-tuned models
-            messages = [{"role": "user", "content": prompt}]
-            text = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            text = format_prompt(prompt, tokenizer, prompt_format)
             input_ids = tokenizer([text], return_tensors="pt").input_ids.to(
                 model.base_model.device
             )
@@ -260,7 +301,7 @@ def run_collection(
     td = TraceDataset(
         steps=all_steps,
         model_target=model.base_model_name_or_path,
-        model_draft="EAGLE2-Qwen2.5-7B-Instruct",
+        model_draft=model_draft_name,
         metadata={
             "dataset": dataset,
             "n_prompts": len(prompts),
@@ -278,6 +319,13 @@ def run_collection(
 def main():
     parser = argparse.ArgumentParser(
         description="Collect CAPIM traces from EAGLE-2 inference"
+    )
+    parser.add_argument(
+        "--model-family",
+        choices=list(MODEL_CONFIGS.keys()),
+        default="qwen25",
+        help="Model family shorthand (sets base-model, ea-model, output prefix, prompt format). "
+             "Overridden by --base-model / --ea-model if provided. (default: qwen25)",
     )
     parser.add_argument(
         "--sanity",
@@ -303,14 +351,16 @@ def main():
     parser.add_argument(
         "--base-model",
         type=str,
-        default="Qwen/Qwen2.5-7B-Instruct",
-        help="HuggingFace repo ID or local path for the target model",
+        default=None,
+        help="HuggingFace repo ID or local path for the target model "
+             "(overrides --model-family default)",
     )
     parser.add_argument(
         "--ea-model",
         type=str,
-        default="leptonai/EAGLE-Qwen2.5-7B-Instruct",
-        help="HuggingFace repo ID or local path for the EAGLE draft model",
+        default=None,
+        help="HuggingFace repo ID or local path for the EAGLE draft model "
+             "(overrides --model-family default)",
     )
     parser.add_argument(
         "--output-dir",
@@ -344,6 +394,14 @@ def main():
     if not args.sanity and args.dataset is None:
         parser.error("--dataset is required unless --sanity is set")
 
+    # Resolve model config: model-family sets defaults; explicit args override
+    cfg = MODEL_CONFIGS[args.model_family]
+    base_model_id  = args.base_model  or cfg["base_model"]
+    ea_model_id    = args.ea_model    or cfg["ea_model"]
+    output_prefix  = cfg["output_prefix"]
+    prompt_format  = cfg["prompt_format"]
+    model_draft_name = ea_model_id.split("/")[-1]  # e.g. "EAGLE-Vicuna-7B-v1.3"
+
     # Resolve prompts, dataset label, output path, and token budget
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -351,13 +409,13 @@ def main():
         dataset_label = "sanity"
         prompts = SANITY_PROMPTS
         max_new_tokens = args.max_new_tokens if args.max_new_tokens != 200 else 100
-        output_path = os.path.join(args.output_dir, "qwen25_sanity.json")
+        output_path = os.path.join(args.output_dir, f"{output_prefix}_sanity.json")
         print(f"\n=== Step 1: Using {len(prompts)} built-in sanity prompts ===")
         print("(No dataset download required)")
     else:
         dataset_label = args.dataset
         max_new_tokens = args.max_new_tokens
-        output_path = os.path.join(args.output_dir, f"qwen25_{args.dataset}.json")
+        output_path = os.path.join(args.output_dir, f"{output_prefix}_{args.dataset}.json")
         print(f"\n=== Step 1: Loading {args.dataset} prompts ===")
         loader = DATASET_LOADERS[args.dataset]
         prompts = loader(args.n_prompts)
@@ -365,8 +423,8 @@ def main():
     # Load model
     print(f"\n=== Step 2: Loading EAGLE-2 model ===")
     model, tokenizer = load_eagle_model(
-        base_model_id=args.base_model,
-        ea_model_id=args.ea_model,
+        base_model_id=base_model_id,
+        ea_model_id=ea_model_id,
         load_in_4bit=args.load_in_4bit,
         load_in_8bit=args.load_in_8bit,
     )
@@ -378,6 +436,8 @@ def main():
         tokenizer=tokenizer,
         prompts=prompts,
         dataset=dataset_label,
+        prompt_format=prompt_format,
+        model_draft_name=model_draft_name,
         max_new_tokens=max_new_tokens,
         dry_run=args.dry_run,
     )

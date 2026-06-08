@@ -100,17 +100,6 @@ QWEN2_5_7B = ModelConfig(
     bytes_per_param=1,   # INT8 quantization
 )
 
-QWEN2_5_0_5B = ModelConfig(
-    name="Qwen2.5-0.5B",
-    d_model=896,
-    n_heads=14,
-    n_kv_heads=2,        # GQA: 2 KV groups
-    n_layers=24,
-    intermediate_size=4864,
-    vocab_size=151936,
-    bytes_per_param=1,   # INT8 quantization
-)
-
 # EAGLE draft head for Qwen2.5-7B-Instruct (leptonai/EAGLE-Qwen2.5-7B-Instruct).
 # Architecture from config.json: 1-layer Qwen2-style transformer at 7B dimensions,
 # with full attention (n_kv_heads=28, no GQA). The 1.65GB file includes the
