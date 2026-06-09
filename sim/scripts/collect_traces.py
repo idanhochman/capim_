@@ -29,6 +29,9 @@ Model families (set via --model-family):
               Draft  : leptonai/EAGLE-Qwen2.5-7B-Instruct (~1 GB)
     vicuna7b  Target : lmsys/vicuna-7b-v1.3               (~13 GB FP16)
               Draft  : yuhuili/EAGLE-Vicuna-7B-v1.3        (~1 GB)
+    llama2    Target : meta-llama/Llama-2-7b-chat-hf      (~13 GB FP16)
+              Draft  : yuhuili/EAGLE-llama2-chat-7B        (~1 GB)
+              NOTE: use this for direct LP-Spec baseline comparison
 
 --base-model and --ea-model override the model-family defaults.
 
@@ -115,6 +118,12 @@ MODEL_CONFIGS = {
         "ea_model":   "yuhuili/EAGLE-Vicuna-7B-v1.3",
         "output_prefix": "vicuna7b",
         "prompt_format": "vicuna",         # manual format (no chat_template in tokenizer)
+    },
+    "llama2": {
+        "base_model": "meta-llama/Llama-2-7b-chat-hf",
+        "ea_model":   "yuhuili/EAGLE-llama2-chat-7B",
+        "output_prefix": "llama2",
+        "prompt_format": "chat_template",  # Llama-2-chat tokenizer has chat_template defined
     },
 }
 
