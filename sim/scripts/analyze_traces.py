@@ -10,15 +10,15 @@ significantly impacting acceptance quality.
 
 Usage:
     # Correlation analysis on a trace file
-    python sim/scripts/analyze_traces.py --trace traces/qwen25_sanity.json
+    python sim/scripts/analyze_traces.py --trace traces/llama2_sanity.json
 
     # With plot saved to disk (requires matplotlib)
-    python sim/scripts/analyze_traces.py --trace traces/qwen25_sanity.json --plot
+    python sim/scripts/analyze_traces.py --trace traces/llama2_sanity.json --plot
 
     # Compare two traces side by side (e.g. alpaca vs gsm8k)
     python sim/scripts/analyze_traces.py \\
-        --trace traces/qwen25_alpaca.json \\
-        --trace2 traces/qwen25_gsm8k.json
+        --trace traces/llama2_alpaca.json \\
+        --trace2 traces/llama2_gsm8k.json
 """
 
 import argparse

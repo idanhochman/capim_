@@ -1,7 +1,7 @@
 """
 Trace data structures for CAPIM simulation.
 
-A trace is collected by running instrumented EAGLE-2 on Qwen2.5 with Alpaca
+A trace is collected by running instrumented EAGLE-2 on LLaMA-2 with Alpaca
 or GSM8K datasets.  The schema is designed to be trace-agnostic: simulation
 modules only consume TraceDataset objects and do not depend on the EAGLE-2
 implementation details.
@@ -84,8 +84,8 @@ class TraceDataset:
     """
 
     steps: List[DecodeStepTrace]
-    model_target: str           # e.g. "Qwen2.5-7B"
-    model_draft: str            # e.g. "Qwen2.5-0.5B"
+    model_target: str           # e.g. "LLaMA-2-7B-Chat"
+    model_draft: str            # e.g. "EAGLE-llama2-chat-7B"
     metadata: Dict              # free-form metadata (sigma_th used, dataset split, etc.)
 
     # Summary statistics (populated after collection)
@@ -254,8 +254,8 @@ def make_synthetic_trace(
 
     td = TraceDataset(
         steps=steps,
-        model_target="Qwen2.5-7B",
-        model_draft="Qwen2.5-0.5B",
+        model_target="LLaMA-2-7B-Chat",
+        model_draft="EAGLE-llama2-chat-7B",
         metadata={"synthetic": True, "seed": seed},
     )
     td.compute_summary()

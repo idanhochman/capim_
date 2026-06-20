@@ -91,8 +91,9 @@ def verify_latency(
     mode, 51.2 GB/s).  The KV-cache stays in PIM and is handled separately
     by pim.attn_latency().
 
-    In the concurrent NPU+PIM model, total verification latency is:
-        t_verify = max(npu.verify_latency(...), pim.attn_latency(...))
+    For CAPIM (sequential, batch=1) total verify latency is ADDITIVE:
+        t_verify = npu.verify_latency(...) + pim.attn_latency(...) + t_nl
+    Only the LP-Spec baseline is concurrent (max). See AUDIT.md #1.
 
     Args:
         model: Target model configuration.

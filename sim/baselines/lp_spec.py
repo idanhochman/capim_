@@ -79,7 +79,7 @@ DTP_PRUNING_RATIO: float = 0.60
 MEDUSA_EFFECTIVE_TREE_SIZE: int = int(MEDUSA_TREE_SIZE * (1 - DTP_PRUNING_RATIO))  # ~25
 
 # Average acceptance length from LP-Spec (Alpaca dataset, Vicuna-7B)
-# We use this as our representative value; actual Qwen2.5 may differ slightly
+# We use this as our representative value; actual LLaMA-2 may differ slightly
 MEDUSA_ACCEPTANCE_LENGTH: float = 2.5   # draft tokens accepted per step
 
 # MEDUSA heads are extremely lightweight (small linear layers appended to target)
@@ -185,7 +185,7 @@ def simulate_lp_spec(
            - Both run simultaneously; t_verify = max(T_NPU_FC, T_PIM_attn).
 
     Args:
-        target_model: Target model (typically QWEN2_5_7B).
+        target_model: Target model (typically LLAMA2_7B).
         mean_context_length: Representative KV-cache length.
         medusa_tree_size: MEDUSA candidate count before DTP (default 63).
         dtp_pruning_ratio: Fraction pruned by DTP (default 0.60).

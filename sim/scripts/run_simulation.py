@@ -6,21 +6,21 @@ both baselines. Prints a comparison table and exports CSV results.
 
 Usage:
     # Basic run with defaults
-    python sim/scripts/run_simulation.py --trace traces/qwen25_alpaca.json
+    python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json
 
     # Custom thresholds
     python sim/scripts/run_simulation.py \
-        --trace traces/qwen25_alpaca.json \
+        --trace traces/llama2_alpaca.json \
         --sigma-th -2.0 --mu-th 10
 
     # Sweep sigma_th and save results
     python sim/scripts/run_simulation.py \
-        --trace traces/qwen25_alpaca.json \
+        --trace traces/llama2_alpaca.json \
         --sweep sigma
 
     # Sweep both (2D grid search)
     python sim/scripts/run_simulation.py \
-        --trace traces/qwen25_alpaca.json \
+        --trace traces/llama2_alpaca.json \
         --sweep joint
 """
 
@@ -38,9 +38,11 @@ def main():
     parser.add_argument("--trace", type=str, required=True,
                         help="Path to TraceDataset JSON (from collect_traces.py)")
     parser.add_argument("--sigma-th", type=float, default=-4.0,
-                        help="Log-prob pruning threshold (default: -2.0)")
-    parser.add_argument("--mu-th", type=int, default=10,
-                        help="Tree size PIM/NPU routing threshold (default: 10)")
+                        help="Cumulative log-prob pruning threshold (default: -4.0; "
+                             "LLaMA-2 median ≈ -4.2)")
+    parser.add_argument("--mu-th", type=int, default=4,
+                        help="Tree size PIM/NPU routing threshold (default: 4; "
+                             "PAPI's α at RLP=1, crossover μ≈4)")
     parser.add_argument("--sweep", choices=["none", "sigma", "mu", "joint"],
                         default="none",
                         help="Run a sensitivity sweep instead of a single point")
@@ -51,7 +53,7 @@ def main():
     args = parser.parse_args()
 
     from sim.trace.schema import TraceDataset
-    from sim.config.models import QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B
+    from sim.config.models import LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B
     from sim.baselines.autoregressive import simulate_autoregressive_from_trace
     from sim.baselines.lp_spec import simulate_lp_spec_from_trace
     from sim.simulation import simulate_capim
@@ -70,8 +72,8 @@ def main():
 
     # Compute baselines (once)
     print("\nComputing baselines...")
-    ar = simulate_autoregressive_from_trace(QWEN2_5_7B, trace)
-    lp = simulate_lp_spec_from_trace(QWEN2_5_7B, trace)
+    ar = simulate_autoregressive_from_trace(LLAMA2_7B, trace)
+    lp = simulate_lp_spec_from_trace(LLAMA2_7B, trace)
     print(f"  AR:      {ar.tokens_per_second:.1f} tok/s, {ar.energy_per_token_j*1000:.2f} mJ/tok")
     print(f"  LP-Spec: {lp.tokens_per_second:.1f} tok/s, {lp.energy_per_token_j*1000:.2f} mJ/tok")
 
@@ -84,7 +86,7 @@ def main():
     if args.sweep == "none":
         # Single-point evaluation
         capim = simulate_capim(
-            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
+            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
             sigma_th=args.sigma_th, mu_th=args.mu_th,
             scenario=scenario, **baseline_kwargs,
         )
@@ -101,12 +103,15 @@ def main():
 
     elif args.sweep == "sigma":
         import math
-        # Calibrated from Alpaca trace cumulative_log_prob distribution:
-        # p10=-5.6, p50=-4.1, p90=-2.2. Sweep spans no-pruning to aggressive.
-        sigma_values = [float("-inf"), -8.0, -6.0, -5.0, -4.5, -4.0, -3.5, -3.0, -2.5]
+        # Calibrated from the LLaMA-2 cumulative_log_prob distribution (AUDIT.md #7):
+        #   Alpaca: p10=-5.95 p50=-4.23 p90=-1.98
+        #   GSM8K:  p10=-7.93 p50=-4.42 p90=-1.52  (heavier tail)
+        # Grid spans no-pruning to aggressive, covering both datasets' ranges.
+        sigma_values = [float("-inf"), -10.0, -8.0, -6.0, -5.0, -4.5, -4.0,
+                        -3.5, -3.0, -2.5, -2.0, -1.5]
         print(f"\nSweeping σ_th over {sigma_values}...")
         results = sigma_sweep(
-            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
+            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
             sigma_values=sigma_values, mu_th=args.mu_th,
             scenario=scenario, **baseline_kwargs,
         )
@@ -122,7 +127,7 @@ def main():
         mu_values = [1, 3, 5, 8, 10, 15, 20, 30, 50, 100]
         print(f"\nSweeping μ_th over {mu_values}...")
         results = mu_sweep(
-            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
+            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
             mu_values=mu_values, sigma_th=args.sigma_th,
             scenario=scenario, **baseline_kwargs,
         )
@@ -136,11 +141,11 @@ def main():
 
     elif args.sweep == "joint":
         import math
-        sigma_values = [float("-inf"), -6.0, -4.5, -3.0]
-        mu_values = [5, 10, 20, 50]
+        sigma_values = [float("-inf"), -6.0, -4.5, -3.0, -2.0]
+        mu_values = [2, 4, 8, 16]  # centered on the μ≈4 PIM/NPU crossover
         print(f"\n2D sweep: σ_th × μ_th ({len(sigma_values)}×{len(mu_values)} grid)...")
         grid = joint_sweep(
-            trace, QWEN2_5_7B, EAGLE_HEAD_QWEN2_5_7B,
+            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
             sigma_values=sigma_values, mu_values=mu_values,
             scenario=scenario, **baseline_kwargs,
         )

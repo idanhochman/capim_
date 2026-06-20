@@ -4,7 +4,7 @@ Toy trace: hand-crafted EAGLE-2 draft trees starting from the token "hi".
 Purpose
 -------
 This script builds a small, human-readable TraceDataset that mirrors exactly
-what the real collector.py would produce from running EAGLE-2 on Qwen2.5-7B.
+what the real collector.py would produce from running EAGLE-2 on LLaMA-2-7B-Chat.
 Use it to:
   - Understand the trace format before real GPU traces arrive.
   - Step through the simulator by hand and verify the numbers make sense.
@@ -26,7 +26,7 @@ import sys
 # Allow running from the project root or from sim/scripts/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from sim.config.models import QWEN2_5_7B, QWEN2_5_0_5B
+from sim.config.models import LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B
 from sim.trace.schema import TokenNode, DecodeStepTrace, TraceDataset
 from sim.simulation import simulate_capim
 from sim.baselines.autoregressive import simulate_autoregressive_from_trace
@@ -34,7 +34,7 @@ from sim.baselines.lp_spec import simulate_lp_spec_from_trace
 from sim.results import compare_results
 
 # ---------------------------------------------------------------------------
-# Token ID → human-readable string (Qwen2.5 tokenizer approximations)
+# Token ID → human-readable string (LLaMA-2 tokenizer approximations)
 # These IDs are illustrative; the simulation uses only log_prob and accepted.
 # ---------------------------------------------------------------------------
 TOKEN_STRINGS = {
@@ -171,8 +171,8 @@ step1 = DecodeStepTrace(
 
 trace = TraceDataset(
     steps=[step0, step1],
-    model_target="Qwen2.5-7B",
-    model_draft="Qwen2.5-0.5B",
+    model_target="LLaMA-2-7B-Chat",
+    model_draft="EAGLE-llama2-chat-7B",
     metadata={"synthetic": False, "note": "hand-crafted toy trace from 'hi'"},
 )
 trace.compute_summary()
@@ -253,8 +253,8 @@ for sigma in [-2.0, -1.5, -1.0]:
 
 print_separator("SIMULATION — CAPIM at different (σ_th, μ_th) settings")
 
-ar  = simulate_autoregressive_from_trace(QWEN2_5_7B, trace)
-lp  = simulate_lp_spec_from_trace(QWEN2_5_7B, trace)
+ar  = simulate_autoregressive_from_trace(LLAMA2_7B, trace)
+lp  = simulate_lp_spec_from_trace(LLAMA2_7B, trace)
 
 configs = [
     ("no pruning,  PIM-heavy", float("-inf"), 8),
@@ -268,8 +268,8 @@ rows = []
 for label, sigma, mu in configs:
     r = simulate_capim(
         trace=trace,
-        target_model=QWEN2_5_7B,
-        draft_model=QWEN2_5_0_5B,
+        target_model=LLAMA2_7B,
+        draft_model=EAGLE_HEAD_LLAMA2_7B,
         sigma_th=sigma,
         mu_th=mu,
         scenario="toy",

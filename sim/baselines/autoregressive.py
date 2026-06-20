@@ -43,7 +43,7 @@ def simulate_autoregressive(
     Simulate pure autoregressive decoding for `n_tokens` output tokens.
 
     Args:
-        target_model: Target model configuration (e.g. QWEN2_5_7B).
+        target_model: Target model configuration (e.g. LLAMA2_7B).
         n_tokens: Total output tokens to generate (used for energy sum).
         mean_context_length: Representative KV-cache length for the roofline
                              calculation.  Use mean context from the trace.

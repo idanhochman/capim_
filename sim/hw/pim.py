@@ -81,7 +81,7 @@ def draft_latency(model: ModelConfig, tree_size: int) -> float:
       latency      = max(bw_time, compute_time)   ← compute_time dominates
 
     Args:
-        model: Draft model configuration (e.g. QWEN2_5_0_5B).
+        model: Draft model configuration (e.g. EAGLE_HEAD_LLAMA2_7B).
         tree_size: Number of tokens in the draft tree to be generated.
 
     Returns:
@@ -114,7 +114,7 @@ def draft_energy(model: ModelConfig, tree_size: int) -> float:
     if tree_size <= 0:
         return 0.0
     w = model.weight_bytes()
-    energy_pj = w * tree_size * PIM_ENERGY_PJ_PER_BIT / 8.0
+    energy_pj = w * tree_size * 8 * PIM_ENERGY_PJ_PER_BIT  # bytes → bits (AUDIT.md #3)
     return pj_to_j(energy_pj)
 
 
@@ -136,7 +136,7 @@ def verify_latency(model: ModelConfig, batch_size: int) -> float:
       latency      = max(bw_time, compute_time)   ← compute_time dominates
 
     Args:
-        model: Target model configuration (e.g. QWEN2_5_7B).
+        model: Target model configuration (e.g. LLAMA2_7B).
         batch_size: Number of tokens to verify (μ after pruning).
 
     Returns:
@@ -168,7 +168,7 @@ def verify_energy(model: ModelConfig, batch_size: int) -> float:
         return 0.0
     w = model.weight_bytes()
     passes = ceil(batch_size / PIM_NALU)
-    energy_pj = w * passes * PIM_ENERGY_PJ_PER_BIT / 8.0
+    energy_pj = w * passes * 8 * PIM_ENERGY_PJ_PER_BIT  # bytes → bits (AUDIT.md #3)
     return pj_to_j(energy_pj)
 
 

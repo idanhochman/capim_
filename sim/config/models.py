@@ -1,11 +1,12 @@
 """
-Model architecture parameters for Qwen2.5-7B and Qwen2.5-0.5B.
+Model architecture parameters for LLaMA-2-7B-Chat and its EAGLE draft head.
 
 These are used to compute weight tensor sizes for bandwidth calculations,
 FLOP counts for energy/latency models, and KV-cache footprints.
 
 Sources:
-  Qwen2.5 technical report / HuggingFace model cards.
+  LLaMA-2 paper / meta-llama/Llama-2-7b-chat-hf config.json.
+  Target model chosen to align with the LP-Spec baseline (which evaluates LLaMA-2).
   bytes_per_param = 1 for INT8 quantization (assumed for mobile deployment).
 """
 
@@ -17,7 +18,7 @@ class ModelConfig:
     name: str
     d_model: int            # hidden dimension
     n_heads: int            # number of attention heads
-    n_kv_heads: int         # number of KV heads (GQA)
+    n_kv_heads: int         # number of KV heads (GQA; == n_heads for MHA)
     n_layers: int           # transformer layers
     intermediate_size: int  # FFN intermediate dimension
     vocab_size: int         # vocabulary size
@@ -89,29 +90,33 @@ class ModelConfig:
 # Pre-defined model configurations
 # ---------------------------------------------------------------------------
 
-QWEN2_5_7B = ModelConfig(
-    name="Qwen2.5-7B",
-    d_model=3584,
-    n_heads=28,
-    n_kv_heads=4,        # GQA: 4 KV groups
-    n_layers=28,
-    intermediate_size=18944,
-    vocab_size=152064,
+# Target model: meta-llama/Llama-2-7b-chat-hf.
+# LLaMA-2-7B uses standard multi-head attention (no GQA → n_kv_heads == n_heads),
+# RMSNorm, SwiGLU (SiLU) FFN, and RoPE. Chosen to align with the LP-Spec baseline.
+LLAMA2_7B = ModelConfig(
+    name="LLaMA-2-7B-Chat",
+    d_model=4096,
+    n_heads=32,
+    n_kv_heads=32,       # MHA (no GQA on the 7B model)
+    n_layers=32,
+    intermediate_size=11008,
+    vocab_size=32000,
     bytes_per_param=1,   # INT8 quantization
 )
 
-# EAGLE draft head for Qwen2.5-7B-Instruct (leptonai/EAGLE-Qwen2.5-7B-Instruct).
-# Architecture from config.json: 1-layer Qwen2-style transformer at 7B dimensions,
-# with full attention (n_kv_heads=28, no GQA). The 1.65GB file includes the
-# embedding table in BFloat16; only FC/attention weights matter for the compute
-# roofline (~0.255 GB at INT8). This is the correct draft model config for CAPIM.
-EAGLE_HEAD_QWEN2_5_7B = ModelConfig(
-    name="EAGLE-Head-Qwen2.5-7B",
-    d_model=3584,
-    n_heads=28,
-    n_kv_heads=28,       # full attention (not GQA — differs from target model)
+# EAGLE draft head for LLaMA-2-7B-Chat (yuhuili/EAGLE-llama2-chat-7B).
+# The EAGLE "draft model" is a lightweight head — a single decoder layer at the
+# target's dimensions plus a fusion FC — trained to predict the target's hidden
+# states. It is inseparable from the target (must be trained against the same
+# weights). Only the FC/attention weights matter for the compute roofline.
+# This is the correct draft-model config for CAPIM.
+EAGLE_HEAD_LLAMA2_7B = ModelConfig(
+    name="EAGLE-Head-LLaMA-2-7B",
+    d_model=4096,
+    n_heads=32,
+    n_kv_heads=32,       # full attention (matches the target's MHA)
     n_layers=1,
-    intermediate_size=18944,
-    vocab_size=152064,
+    intermediate_size=11008,
+    vocab_size=32000,
     bytes_per_param=1,   # INT8 quantization for mobile deployment
 )

@@ -44,14 +44,14 @@ pip install bitsandbytes>=0.43.0
 Both models are downloaded automatically from HuggingFace on first use. If you want to pre-download them manually:
 
 ```bash
-huggingface-cli download Qwen/Qwen2.5-7B-Instruct
-huggingface-cli download yuhuili/EAGLE2-Qwen2.5-7B-Instruct
+huggingface-cli download meta-llama/Llama-2-7b-chat-hf
+huggingface-cli download yuhuili/EAGLE-llama2-chat-7B
 ```
 
 | Role | Model | Size |
 |---|---|---|
-| Target | `Qwen/Qwen2.5-7B-Instruct` | ~15 GB (FP16) |
-| Draft (EAGLE-2) | `yuhuili/EAGLE2-Qwen2.5-7B-Instruct` | ~1 GB |
+| Target | `meta-llama/Llama-2-7b-chat-hf` | ~15 GB (FP16) |
+| Draft (EAGLE-2) | `yuhuili/EAGLE-llama2-chat-7B` | ~1 GB |
 
 If HuggingFace downloads are slow from your location:
 
@@ -102,7 +102,7 @@ Model loaded successfully
     Collected 6 steps (total so far: 14)
 
 === Step 4: Saving trace ===
-Saved 14 steps to traces/qwen25_alpaca.json
+Saved 14 steps to traces/llama2_alpaca.json
 
 Summary:
   Mean tree size        : 19.3 tokens
@@ -119,7 +119,7 @@ python sim/scripts/collect_traces.py \
     --max-new-tokens 200
 ```
 
-With a 16 GB GPU this takes roughly 30–60 minutes. Output: `traces/qwen25_alpaca.json`.
+With a 16 GB GPU this takes roughly 30–60 minutes. Output: `traces/llama2_alpaca.json`.
 
 ### 3. Collect GSM8K traces
 
@@ -130,7 +130,7 @@ python sim/scripts/collect_traces.py \
     --max-new-tokens 300
 ```
 
-GSM8K answers are longer, so `--max-new-tokens 300` is recommended. Output: `traces/qwen25_gsm8k.json`.
+GSM8K answers are longer, so `--max-new-tokens 300` is recommended. Output: `traces/llama2_gsm8k.json`.
 
 ### 4. (Optional) Use quantization if VRAM is tight
 
@@ -147,8 +147,8 @@ python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 200 --load-in-
 ```bash
 python sim/scripts/collect_traces.py \
     --dataset alpaca \
-    --base-model /path/to/Qwen2.5-7B-Instruct \
-    --ea-model   /path/to/EAGLE2-Qwen2.5-7B-Instruct \
+    --base-model /path/to/Llama-2-7b-chat-hf \
+    --ea-model   /path/to/EAGLE2-Llama-2-7b-chat-hf \
     --n-prompts 200
 ```
 
@@ -160,22 +160,22 @@ Once you have trace files, the simulation runs entirely on CPU:
 
 ```bash
 # Single evaluation point
-python sim/scripts/run_simulation.py --trace traces/qwen25_alpaca.json
+python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json
 
 # With specific thresholds
 python sim/scripts/run_simulation.py \
-    --trace traces/qwen25_alpaca.json \
+    --trace traces/llama2_alpaca.json \
     --sigma-th -2.0 \
     --mu-th 10
 
 # Sweep σ_th to find the optimal pruning threshold
-python sim/scripts/run_simulation.py --trace traces/qwen25_alpaca.json --sweep sigma
+python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json --sweep sigma
 
 # 2D grid search over (σ_th, μ_th)
-python sim/scripts/run_simulation.py --trace traces/qwen25_alpaca.json --sweep joint
+python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json --sweep joint
 
 # Save sensitivity plots (requires matplotlib)
-python sim/scripts/run_simulation.py --trace traces/qwen25_alpaca.json --sweep sigma --plot
+python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json --sweep sigma --plot
 ```
 
 Results are saved to `results/` as CSV files.
@@ -190,8 +190,8 @@ Results are saved to `results/` as CSV files.
 |---|---|---|
 | `--dataset` | `alpaca` | `alpaca` or `gsm8k` |
 | `--n-prompts` | `200` | Number of prompts to run |
-| `--base-model` | `Qwen/Qwen2.5-7B-Instruct` | HuggingFace ID or local path |
-| `--ea-model` | `yuhuili/EAGLE2-Qwen2.5-7B-Instruct` | HuggingFace ID or local path |
+| `--base-model` | `meta-llama/Llama-2-7b-chat-hf` | HuggingFace ID or local path |
+| `--ea-model` | `yuhuili/EAGLE-llama2-chat-7B` | HuggingFace ID or local path |
 | `--output-dir` | `traces` | Directory to save the JSON file |
 | `--max-new-tokens` | `200` | Max tokens to generate per prompt |
 | `--load-in-4bit` | off | 4-bit quantization (~10 GB VRAM) |
@@ -217,7 +217,7 @@ Traces are saved as JSON and can be loaded with:
 
 ```python
 from sim.trace.schema import TraceDataset
-trace = TraceDataset.load("traces/qwen25_alpaca.json")
+trace = TraceDataset.load("traces/llama2_alpaca.json")
 
 print(f"{len(trace.steps)} decode steps")
 print(f"Mean tree size: {trace.mean_tree_size:.1f} tokens")

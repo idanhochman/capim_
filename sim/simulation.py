@@ -16,16 +16,16 @@ Pipeline per decode step
   1. Simulate live confidence-gated pruning  (scheduler.prune_tree)
   2. Drafting phase in PIM mode (0.5B draft model; compute-bound)
   3. Route based on pruned tree size μ vs μ_th  (scheduler.route)
-  4a. PIM-only path (μ < μ_th):
+  4a. PIM path (μ < μ_th):
         PIM mode runs FC layers (compute-bound: ~32 ms × μ for 7B model)
         PIM mode runs attention on KV-cache (compute-bound, negligible)
-        NPU stays idle → large energy saving
-  4b. NPU+PIM concurrent path (μ ≥ μ_th):
+        NPU is NOT fully idle — it still runs the nonlinear glue (t_nl).
+  4b. NPU+PIM path (μ ≥ μ_th), SEQUENTIAL at batch=1 (no concurrency):
         NPU reads FC weights from PIM banks in HOST mode (127 ms, BW-bound)
         PIM reads KV-cache for attention in PIM mode (≈4 ms, compute-bound)
-        t_verify = max(t_npu_fc, t_pim_attn) ≈ 127 ms
-        Both run simultaneously; energy is summed.
+        t_verify = t_npu_fc + t_pim_attn + t_nl   (ADDITIVE — see AUDIT.md #1)
         No explicit transfer step — NPU reads directly from PIM banks.
+        NB: the LP-Spec baseline IS concurrent (max); CAPIM is not.
   5. Count accepted tokens from the pruned tree
   6. Accumulate step results
 
@@ -140,8 +140,8 @@ def simulate_capim(
 
     Args:
         trace: Collected EAGLE-2 trace (TraceDataset).
-        target_model: Target model config (e.g. QWEN2_5_7B).
-        draft_model: Draft model config (e.g. QWEN2_5_0_5B).
+        target_model: Target model config (e.g. LLAMA2_7B).
+        draft_model: Draft model config (e.g. EAGLE_HEAD_LLAMA2_7B).
         sigma_th: Log-probability pruning threshold.
                   float('-inf') = no pruning (EAGLE-2 baseline).
                   Typical range: −5.0 to −0.5.
@@ -218,17 +218,21 @@ def simulate_capim(
                 + pim.attn_energy(target_model, step.context_length)
             )
         else:
-            # Concurrent NPU+PIM path:
+            # NPU+PIM path, SEQUENTIAL (batch=1, no concurrency — see AUDIT.md #1):
             #   NPU reads FC weights from PIM banks via external bus (HOST mode)
-            #   PIM reads KV-cache for attention in PIM mode simultaneously
+            #   PIM reads KV-cache for attention in PIM mode
             #   No explicit transfer — NPU accesses PIM banks directly.
+            # Verify latency is ADDITIVE: t_fc + t_attn + t_nl. This differs from
+            # the LP-Spec baseline, which IS concurrent (max). t_nl is the NPU
+            # nonlinear cost (softmax/RMSNorm), additive in both routes — modeled
+            # as 0 here pending the per-crossing-latency decision (AUDIT.md #2).
             npu_steps += 1
             t_npu_fc = npu.verify_latency(target_model, mu, step.context_length)
             e_npu_fc = npu.verify_energy(target_model, mu, step.context_length)
             t_pim_attn = pim.attn_latency(target_model, mu, step.context_length)
             e_pim_attn = pim.attn_energy(target_model, step.context_length)
-            # Concurrent execution: latency = max; energy = sum (both active).
-            t_verify = max(t_npu_fc, t_pim_attn)
+            t_nl = 0.0  # TODO(#2): NPU nonlinear cost, additive
+            t_verify = t_npu_fc + t_pim_attn + t_nl
             e_verify = e_npu_fc + e_pim_attn
 
         t_step = t_draft + t_verify

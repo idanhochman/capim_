@@ -11,7 +11,7 @@ Requirements:
   - The packages listed in requirements_collection.txt
 
 Usage:
-    # Qwen2.5-7B (default) — Alpaca traces
+    # LLaMA-2-7B-Chat (default) — Alpaca traces
     python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 200
 
     # Vicuna-7B — same prompts, for direct LP-Spec comparison
@@ -25,8 +25,8 @@ Usage:
     python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 3 --dry-run
 
 Model families (set via --model-family):
-    qwen25    Target : Qwen/Qwen2.5-7B-Instruct          (~15 GB FP16)
-              Draft  : leptonai/EAGLE-Qwen2.5-7B-Instruct (~1 GB)
+    llama2    Target : meta-llama/Llama-2-7b-chat-hf          (~15 GB FP16)
+              Draft  : yuhuili/EAGLE-llama2-chat-7B (~1 GB)
     vicuna7b  Target : lmsys/vicuna-7b-v1.3               (~13 GB FP16)
               Draft  : yuhuili/EAGLE-Vicuna-7B-v1.3        (~1 GB)
     llama2    Target : meta-llama/Llama-2-7b-chat-hf      (~13 GB FP16)
@@ -36,8 +36,8 @@ Model families (set via --model-family):
 --base-model and --ea-model override the model-family defaults.
 
 Output (examples):
-    traces/qwen25_alpaca.json
-    traces/qwen25_gsm8k.json
+    traces/llama2_alpaca.json
+    traces/llama2_gsm8k.json
     traces/vicuna7b_alpaca.json
     traces/vicuna7b_gsm8k.json
 """
@@ -107,23 +107,17 @@ DATASET_LOADERS = {
 # ---------------------------------------------------------------------------
 
 MODEL_CONFIGS = {
-    "qwen25": {
-        "base_model": "Qwen/Qwen2.5-7B-Instruct",
-        "ea_model":   "leptonai/EAGLE-Qwen2.5-7B-Instruct",
-        "output_prefix": "qwen25",
-        "prompt_format": "chat_template",  # use tokenizer.apply_chat_template
+    "llama2": {
+        "base_model": "meta-llama/Llama-2-7b-chat-hf",
+        "ea_model":   "yuhuili/EAGLE-llama2-chat-7B",
+        "output_prefix": "llama2",
+        "prompt_format": "chat_template",  # Llama-2-chat tokenizer has chat_template defined
     },
     "vicuna7b": {
         "base_model": "lmsys/vicuna-7b-v1.3",
         "ea_model":   "yuhuili/EAGLE-Vicuna-7B-v1.3",
         "output_prefix": "vicuna7b",
         "prompt_format": "vicuna",         # manual format (no chat_template in tokenizer)
-    },
-    "llama2": {
-        "base_model": "meta-llama/Llama-2-7b-chat-hf",
-        "ea_model":   "yuhuili/EAGLE-llama2-chat-7B",
-        "output_prefix": "llama2",
-        "prompt_format": "chat_template",  # Llama-2-chat tokenizer has chat_template defined
     },
 }
 
@@ -332,9 +326,9 @@ def main():
     parser.add_argument(
         "--model-family",
         choices=list(MODEL_CONFIGS.keys()),
-        default="qwen25",
+        default="llama2",
         help="Model family shorthand (sets base-model, ea-model, output prefix, prompt format). "
-             "Overridden by --base-model / --ea-model if provided. (default: qwen25)",
+             "Overridden by --base-model / --ea-model if provided. (default: llama2)",
     )
     parser.add_argument(
         "--sanity",

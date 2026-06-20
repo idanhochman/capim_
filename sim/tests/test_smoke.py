@@ -35,19 +35,19 @@ def test_config_hardware():
 
 
 def test_config_models():
-    from sim.config.models import QWEN2_5_7B, QWEN2_5_0_5B
+    from sim.config.models import LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B
 
-    w7b = QWEN2_5_7B.weight_bytes()
-    w0_5b = QWEN2_5_0_5B.weight_bytes()
+    w7b = LLAMA2_7B.weight_bytes()
+    w_draft = EAGLE_HEAD_LLAMA2_7B.weight_bytes()
 
     # 7B model should have ~7 billion bytes (INT8 ≈ 7 GB)
     assert 5e9 < w7b < 10e9, f"7B weight_bytes={w7b:.2e} out of range"
-    # 0.5B model should have ~0.5 billion bytes
-    assert 0.3e9 < w0_5b < 1e9, f"0.5B weight_bytes={w0_5b:.2e} out of range"
+    # EAGLE draft head is a single decoder layer at 7B dims (~0.2 GB INT8)
+    assert 0.1e9 < w_draft < 0.5e9, f"draft head weight_bytes={w_draft:.2e} out of range"
 
-    kv = QWEN2_5_7B.kv_cache_bytes(512)
+    kv = LLAMA2_7B.kv_cache_bytes(512)
     assert kv > 0
-    print(f"  [PASS] config.models  (7B={w7b/1e9:.2f}GB, 0.5B={w0_5b/1e9:.3f}GB)")
+    print(f"  [PASS] config.models  (7B={w7b/1e9:.2f}GB, draft={w_draft/1e9:.3f}GB)")
 
 
 def test_trace_schema():
@@ -65,36 +65,36 @@ def test_trace_schema():
 
 
 def test_hw_pim():
-    from sim.config.models import QWEN2_5_0_5B, QWEN2_5_7B
+    from sim.config.models import EAGLE_HEAD_LLAMA2_7B, LLAMA2_7B
     import sim.hw.pim as pim
 
-    t_draft = pim.draft_latency(QWEN2_5_0_5B, tree_size=20)
-    e_draft = pim.draft_energy(QWEN2_5_0_5B, tree_size=20)
+    t_draft = pim.draft_latency(EAGLE_HEAD_LLAMA2_7B, tree_size=20)
+    e_draft = pim.draft_energy(EAGLE_HEAD_LLAMA2_7B, tree_size=20)
     assert t_draft > 0
     assert e_draft > 0
 
-    t_verify = pim.verify_latency(QWEN2_5_7B, batch_size=10)
-    e_verify = pim.verify_energy(QWEN2_5_7B, batch_size=10)
+    t_verify = pim.verify_latency(LLAMA2_7B, batch_size=10)
+    e_verify = pim.verify_energy(LLAMA2_7B, batch_size=10)
     assert t_verify > 0
     assert e_verify > 0
 
     # Zero batch should return zero
-    assert pim.draft_latency(QWEN2_5_0_5B, 0) == 0.0
-    assert pim.verify_energy(QWEN2_5_7B, 0) == 0.0
+    assert pim.draft_latency(EAGLE_HEAD_LLAMA2_7B, 0) == 0.0
+    assert pim.verify_energy(LLAMA2_7B, 0) == 0.0
 
     print(f"  [PASS] hw.pim  (draft t={t_draft*1e3:.2f}ms, verify t={t_verify*1e3:.2f}ms)")
 
 
 def test_hw_npu():
-    from sim.config.models import QWEN2_5_7B
+    from sim.config.models import LLAMA2_7B
     import sim.hw.npu as npu
 
-    t = npu.ar_token_latency(QWEN2_5_7B, seq_len=512)
-    e = npu.ar_token_energy(QWEN2_5_7B, seq_len=512)
+    t = npu.ar_token_latency(LLAMA2_7B, seq_len=512)
+    e = npu.ar_token_energy(LLAMA2_7B, seq_len=512)
     assert t > 0
     assert e > 0
 
-    t_batch = npu.verify_latency(QWEN2_5_7B, batch_size=10, seq_len=512)
+    t_batch = npu.verify_latency(LLAMA2_7B, batch_size=10, seq_len=512)
     # Batched verification should be faster per-token than single-token
     assert t_batch > 0
 
@@ -131,19 +131,19 @@ def test_scheduler():
 
 
 def test_baselines():
-    from sim.config.models import QWEN2_5_7B
+    from sim.config.models import LLAMA2_7B
     from sim.trace.schema import make_synthetic_trace
     from sim.baselines.autoregressive import simulate_autoregressive_from_trace
     from sim.baselines.lp_spec import simulate_lp_spec_from_trace
 
     td = make_synthetic_trace(n_steps=50)
 
-    ar = simulate_autoregressive_from_trace(QWEN2_5_7B, td)
+    ar = simulate_autoregressive_from_trace(LLAMA2_7B, td)
     assert ar.latency_per_token_s > 0
     assert ar.energy_per_token_j > 0
     assert ar.tokens_per_second > 0
 
-    lp = simulate_lp_spec_from_trace(QWEN2_5_7B, td)
+    lp = simulate_lp_spec_from_trace(LLAMA2_7B, td)
     assert lp.latency_per_token_s > 0
     assert lp.energy_per_token_j > 0
 
@@ -154,7 +154,7 @@ def test_baselines():
 
 
 def test_simulation_e2e():
-    from sim.config.models import QWEN2_5_7B, QWEN2_5_0_5B
+    from sim.config.models import LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B
     from sim.trace.schema import make_synthetic_trace
     from sim.baselines.autoregressive import simulate_autoregressive_from_trace
     from sim.baselines.lp_spec import simulate_lp_spec_from_trace
@@ -162,13 +162,13 @@ def test_simulation_e2e():
 
     td = make_synthetic_trace(n_steps=100, tree_size=20, acceptance_rate=0.4, seed=42)
 
-    ar = simulate_autoregressive_from_trace(QWEN2_5_7B, td)
-    lp = simulate_lp_spec_from_trace(QWEN2_5_7B, td)
+    ar = simulate_autoregressive_from_trace(LLAMA2_7B, td)
+    lp = simulate_lp_spec_from_trace(LLAMA2_7B, td)
 
     result = simulate_capim(
         trace=td,
-        target_model=QWEN2_5_7B,
-        draft_model=QWEN2_5_0_5B,
+        target_model=LLAMA2_7B,
+        draft_model=EAGLE_HEAD_LLAMA2_7B,
         sigma_th=-2.0,
         mu_th=10,
         scenario="synthetic",
@@ -193,7 +193,7 @@ def test_simulation_e2e():
 
 
 def test_results_compare():
-    from sim.config.models import QWEN2_5_7B, QWEN2_5_0_5B
+    from sim.config.models import LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B
     from sim.trace.schema import make_synthetic_trace
     from sim.baselines.autoregressive import simulate_autoregressive_from_trace
     from sim.baselines.lp_spec import simulate_lp_spec_from_trace
@@ -202,10 +202,10 @@ def test_results_compare():
     import tempfile, os
 
     td = make_synthetic_trace(n_steps=50)
-    ar = simulate_autoregressive_from_trace(QWEN2_5_7B, td)
-    lp = simulate_lp_spec_from_trace(QWEN2_5_7B, td)
+    ar = simulate_autoregressive_from_trace(LLAMA2_7B, td)
+    lp = simulate_lp_spec_from_trace(LLAMA2_7B, td)
     capim = simulate_capim(
-        td, QWEN2_5_7B, QWEN2_5_0_5B,
+        td, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
         sigma_th=-2.0, mu_th=10,
         ar_latency_per_token=ar.latency_per_token_s,
         lp_latency_per_token=lp.latency_per_token_s,
@@ -224,7 +224,7 @@ def test_results_compare():
 
     # sigma sweep
     sweep = sigma_sweep(
-        td, QWEN2_5_7B, QWEN2_5_0_5B,
+        td, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
         sigma_values=[float("-inf"), -3.0, -2.0, -1.0],
         mu_th=10,
         ar_latency_per_token=ar.latency_per_token_s,

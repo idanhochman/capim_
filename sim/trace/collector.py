@@ -48,8 +48,8 @@ class Collector:
         self,
         dataset: str = "unknown",
         prompt_id: int = 0,
-        model_target: str = "Qwen2.5-7B",
-        model_draft: str = "Qwen2.5-0.5B",
+        model_target: str = "LLaMA-2-7B-Chat",
+        model_draft: str = "EAGLE-llama2-chat-7B",
     ):
         self.dataset = dataset
         self.prompt_id = prompt_id
