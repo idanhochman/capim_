@@ -2,45 +2,94 @@
 Hardware constants for CAPIM simulation.
 
 Primary source: LP-Spec Table II (bandwidth, compute, capacity).
-Energy values are derived from ratios stated in LP-Spec and anchored to
-SpecPIM's measured figures, as follows:
 
-  Off-chip transfer energy (5.4 pJ/bit):
-    SpecPIM (ASPLOS 2024) Table 2 states 5.47 pJ/bit for external HBM
-    bandwidth. Used as the off-chip anchor for LPDDR5-PIM.
+Energy model = 2 data-movement constants (pJ/bit, named by INTERFACE) + 2 compute
+constants (pJ/MAC, named by DEVICE/process). The four feed the [off_mem, on_chip,
+alu, comm] vector everywhere:
+    off_mem <- MEM_INTERNAL (PIM)   or MEM_OFFCHIP (NPU)
+    alu     <- PIM_MAC_PJ_PER_OP    or NPU_MAC_PJ_PER_OP
+    comm    <- MEM_OFFCHIP (the PIM<->NPU crossing rides the same external bus)
+    on_chip <- 0 (no mobile cache hierarchy modelled)
+Sourcing for each, below:
 
-  Internal DRAM access energy (0.8 pJ/bit):
+  MEM_OFFCHIP -- off-chip transfer energy (5.47 pJ/bit):
+    = 5.47 pJ/bit, HBM2 memory-access energy. ORIGIN: TPU-v4i (Jouppi et al.),
+    quoted in SpecPIM (ASPLOS 2024) §7.1 ("energy of HBM2 and GDDR6 are 5.47pJ/b
+    and 6.48pJ/b ... according to TPU-v4i [25]") -- NOT SpecPIM's own Table 2
+    (that table is the HBM2-vs-GDDR6 design space, not the energy value).
+    We use it because LP-Spec itself draws its energy "from prior works
+    [24],[26],[29]" (LP-Spec §VI) and [29] IS SpecPIM -- so 5.4 keeps us on the
+    SAME energy basis as the baseline we validate against. It is an HBM2 stand-in:
+    LP-Spec publishes no absolute LPDDR5 off-chip figure. We use the exact
+    cited 5.47 (not a rounded 5.4) for source fidelity.
+    SENSITIVITY BOUND (not adopted): real mobile LPDDR5 off-chip I/O is much
+    higher -- 10 pJ/bit (LPDDR5x/5T, Snapdragon 8 Gen 3 / Dimensity 9300) to
+    20 pJ/bit (plain LPDDR5, A17 Pro), per PIM-AI (arXiv:2411.17309) Table 1
+    (round-trip: SoC PHY + memory-side PHY). HBM2 is genuinely 2-4x more
+    efficient per bit than LPDDR5, so 5.4 is OPTIMISTIC for off-chip/comm.
+    Carry 10 and 20 pJ/bit as a sweep to show the AR/LP-Spec/CAPIM comparison
+    is invariant (all three share this base); see AUDIT.
+
+  MEM_INTERNAL -- internal near-bank DRAM access energy (0.8 pJ/bit):
     LP-Spec Section II-A states "data transfers within DRAM consume only
-    15% of the energy required for off-DRAM transfers [23]."
-    Derived: 0.15 × 5.4 pJ/bit = 0.81 pJ/bit → rounded to 0.8 pJ/bit.
+    15% of the energy required for off-DRAM transfers [23]" ([23] = Samsung
+    Hot Chips 35, 2023). Derived: 0.15 × 5.47 = 0.82 → rounded to 0.8 pJ/bit.
+    CORROBORATED: PIM-AI Table 1 independently lists 0.95 pJ/bit for internal
+    near-bank DRAM access -- same ballpark, different (LPDDR5) source.
 
-  NPU INT8 MAC energy (0.5 pJ/op):
-    LP-Spec Section IV-B states "an INT8 MAC unit ... consumes 63.6% of
-    the energy of a FP16 MAC in 20 nm DRAM process [32]."
-    [32] = Samsung ISCA 2021 (Lee et al., "Hardware Architecture and
-    Software Stack for PIM Based on Commercial DRAM Technology").
-    Table I of that paper gives values normalised to INT16 MAC (=1.0):
-    INT8(32-bit Acc.)=0.77, FP16=1.21 → ratio 0.77/1.21 = 63.6%. VERIFIED.
-    0.5 pJ/op is an approximation consistent with LP-Spec's methodology.
+  INT8 MAC energy (0.23 pJ/op for BOTH NPU and PIM):
+    Anchored to Horowitz (ISSCC 2014), the per-op energy table at 45 nm: 8-bit
+    integer MULT 0.2 pJ + 8-bit integer ADD 0.03 pJ = 0.23 pJ/MAC. The one real,
+    citable absolute we have for an INT8 MAC.
+
+    Kept as TWO constants (NPU_MAC, PIM_MAC) -- same nominal value, different
+    devices -- so the PIM side can be swept independently (below). We do NOT bake
+    in a PIM/NPU difference, because:
+      - Horowitz is a LOGIC-process number. Our NPU (4 nm logic) sits below 45 nm,
+        so 0.23 is a conservative upper bound there. Same order as PAPI's alu =
+        0.32 -- but note PAPI's value is UNCITED in its config (the only energy
+        coefficient there with no source), so that is a sanity check, not support.
+      - The PIM ALU is a 20 nm DRAM-process device. DRAM-process logic is
+        DIRECTIONALLY costlier (LP-Spec: DRAM process ~10x less dense than logic;
+        Samsung ISCA 2021 [32] gives INT8 = 63.6% of FP16 in DRAM vs Horowitz's
+        ~15% in logic -- the energetics genuinely differ). But the MAGNITUDE is
+        UNPUBLISHED (Samsung Table I is normalised to INT16=1.0, no absolute; and
+        LP-Spec uses 63.6% only to justify its ALU design choice, not as an energy
+        input -- its actual energy is borrowed "from [24],[26],[29]", §VI).
+    So PIM_MAC = 0.23 is a logic-process FLOOR. The known-direction/unknown-
+    magnitude DRAM-process upside is handled by a SWEEP on PIM_MAC, not an
+    invented point penalty. Both MACs are second-order anyway (alu ~1% NPU /
+    ~7% PIM of layer energy at batch=1 GEMV; movement dominates).
 
 # TODO (energy verification):
-#   VERIFIED:
-#     - 5.47 pJ/bit off-chip: SpecPIM (ASPLOS 2024) Table 2, explicit value.
-#     - 15% internal/off-chip ratio: LP-Spec Sec. II-A [23], explicit quote.
-#     - 63.6% INT8/FP16 ratio: Samsung ISCA 2021 Table I (normalised to INT16).
+#   VERIFIED (provenance traced to source, 2026-06-21):
+#     - MEM_OFFCHIP 5.47 pJ/bit: HBM2, from TPU-v4i, quoted SpecPIM §7.1 (NOT its
+#       Table 2). LP-Spec-aligned: LP-Spec §VI energy is "from [24],[26],[29]",
+#       [29]=SpecPIM. So it matches the baseline's own basis.
+#     - MEM_INTERNAL 15% internal/off-chip ratio: LP-Spec Sec. II-A, quoting
+#       [23] = Samsung Hot Chips 35 (2023). Corroborated: PIM-AI Table 1 lists
+#       0.95 pJ/bit internal (LPDDR5) -- same ballpark as our 0.8.
+#     - NPU_MAC = PIM_MAC = 0.23 pJ/op: Horowitz ISSCC 2014 (8-bit INT mult 0.2 +
+#       add 0.03) @ 45 nm logic -- the only citable absolute INT8 MAC.
 #
-#   NOT VERIFIED (approximations):
-#     - 5.4 vs 5.47 pJ/bit: SpecPIM value is for HBM, not LPDDR5. No LPDDR5
-#       specific off-chip energy figure found in any cited paper.
-#     - 0.5 pJ/op INT8 MAC: requires absolute INT16 MAC energy at 20 nm as
-#       baseline. Samsung ISCA 2021 Table I gives only relative (normalised)
-#       values; absolute baseline not stated in any cited paper.
+#   KNOWN LIMITATION (documented, not a bug):
+#     - MEM_OFFCHIP is an HBM2 stand-in; real LPDDR5 off-chip is 10-20 pJ/bit
+#       (PIM-AI Table 1, round-trip). Kept at 5.47 for LP-Spec comparability;
+#       carry 10/20 as a sensitivity sweep. The whole subfield (incl. LP-Spec)
+#       uses HBM/GDDR energy for LPDDR5 designs -- state this, don't hide it.
+#     - PIM_MAC = 0.23 is a logic-process FLOOR. DRAM-process logic is directionally
+#       costlier (Samsung INT8/FP16 = 63.6% in DRAM vs ~15% in Horowitz logic) but
+#       the absolute is UNPUBLISHED -> the upside is a SWEEP, not a baked-in penalty.
+#     - NPU_MAC 0.23 is a 45 nm UPPER BOUND for a 4 nm part (true value lower).
+#     - Both MACs are 2nd-order (alu ~1% NPU / ~7% PIM of layer energy at
+#       batch=1 GEMV; movement dominates) -- precision is not load-bearing.
 #
 #   TODO:
-#     - Verify 5.4 pJ/bit against an LPDDR5-specific source (not HBM).
-#     - Find absolute INT16 MAC energy at 20 nm (Horowitz 2014 ISSCC is the
-#       standard reference; check Table 1 of that paper).
-#     - If absolute INT16 value found, recompute: INT8 = 0.77 × INT16 pJ/op.
+#     - Mine the LPDDR5-PIM primaries for a citable LPDDR5 off-chip pJ/bit:
+#       Aquabolt-XL (IEEE Micro 2022, [20]) and Samsung Hot Chips 35 (2023, [23]).
+#       PIM-AI's 10/20 are uncited ("derived from the memory technologies used").
+#     - If the PIM_MAC sweep shows sensitivity: find an absolute INT16/FP16 MAC
+#       energy at 20 nm DRAM (then PIM_MAC = 0.636 x FP16_abs) to replace the floor.
 """
 
 # ---------------------------------------------------------------------------
@@ -70,20 +119,31 @@ PIM_NALU: int = 1                        # treat as 1 for GEMV baseline; refine 
 
 # ---------------------------------------------------------------------------
 # Energy constants — see module docstring for full derivation
+# 2 movement (pJ/bit, by interface) + 2 compute (pJ/MAC, by device/process)
 # ---------------------------------------------------------------------------
 
-# Internal DRAM access energy (within PIM banks)
-# Derived: 15% x 5.4 pJ/bit (LP-Spec Sec. II-A [23])
-PIM_ENERGY_PJ_PER_BIT: float = 0.8     # pJ/bit
+# --- data movement: energy per BIT, named by interface ---
 
-# Off-chip transfer energy (PIM -> NPU over external I/O)
-# Source: SpecPIM Table 2 (5.47 pJ/bit for external HBM bandwidth)
-OFFCHIP_ENERGY_PJ_PER_BIT: float = 5.4 # pJ/bit
+# Internal near-bank movement, within the DRAM die (PIM path only).
+# Derived: 15% x 5.47 (LP-Spec Sec. II-A [23]); corroborated by PIM-AI's 0.95 pJ/bit
+MEM_INTERNAL_PJ_PER_BIT: float = 0.8    # pJ/bit
 
-# INT8 MAC energy on the NPU
-# 63.6% of FP16 MAC energy (Samsung ISCA 2021 Table I, LP-Spec Sec. IV-B [32])
-# Absolute baseline unverified — 0.5 pJ/op is an approximation (see docstring)
-NPU_ENERGY_PJ_PER_INT8_OP: float = 0.5 # pJ/op
+# Off-chip movement over the external LPDDR5 bus: NPU HOST-mode weight reads AND
+# the PIM<->NPU crossing (comm) both ride this interface.
+# 5.47 HBM2 (TPU-v4i via SpecPIM §7.1); LP-Spec-aligned ([29]=SpecPIM). HBM2
+# stand-in -- real LPDDR5 is 10-20 pJ/bit (PIM-AI); sweep those. See docstring.
+MEM_OFFCHIP_PJ_PER_BIT: float = 5.47    # pJ/bit
+
+# --- compute: energy per INT8 MAC, named by device/process (SPLIT; see docstring) ---
+
+# Horowitz ISSCC 2014: 8-bit INT mult 0.2 + add 0.03 = 0.23 pJ/MAC @ 45 nm logic.
+# PIM near-bank ALU, 20 nm DRAM process. 0.23 is a logic-process FLOOR; DRAM
+# process is directionally costlier but unpublished -> sweep PIM_MAC for the upside.
+PIM_MAC_PJ_PER_OP: float = 0.23         # pJ/op
+
+# NPU matrix/vector unit, 4 nm logic. 0.23 is a conservative upper bound (4 nm <
+# 45 nm); same order as PAPI's alu=0.32 (which is uncited -- sanity check only).
+NPU_MAC_PJ_PER_OP: float = 0.23         # pJ/op
 
 # ---------------------------------------------------------------------------
 # Mobile NPU

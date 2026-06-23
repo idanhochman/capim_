@@ -1,186 +1,122 @@
 """
-CAPIM Simulation Runner
+Run the CAPIM simulation: all four drivers over collected traces, with the LP-Spec
+metrics (token/s, token/J, EDP), plus optional σ_th and LP-Spec-L sweeps.
 
-Loads a collected TraceDataset and runs the full CAPIM simulation against
-both baselines. Prints a comparison table and exports CSV results.
+Two traces, one per SD method, both for the SAME dataset (handover §5 step 4):
+  - --eagle-trace  : consumed by AR, EAGLE-2/NPU, and CAPIM (EAGLE confidence).
+  - --medusa-trace : consumed by the LP-Spec baseline (static MEDUSA tree + DTP).
+If --medusa-trace is omitted, LP-Spec is skipped with a warning.
 
 Usage:
-    # Basic run with defaults
-    python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json
-
-    # Custom thresholds
-    python sim/scripts/run_simulation.py \
-        --trace traces/llama2_alpaca.json \
-        --sigma-th -2.0 --mu-th 10
-
-    # Sweep sigma_th and save results
-    python sim/scripts/run_simulation.py \
-        --trace traces/llama2_alpaca.json \
-        --sweep sigma
-
-    # Sweep both (2D grid search)
-    python sim/scripts/run_simulation.py \
-        --trace traces/llama2_alpaca.json \
-        --sweep joint
+  python3 -m sim.scripts.run_simulation \
+      --eagle-trace traces/vicuna7b_eagle_alpaca.json \
+      --medusa-trace traces/vicuna7b_medusa_alpaca.json
+  ... --sweep-sigma            # σ_th pruning vs false-neg knee (CAPIM)
+  ... --sweep-lp-L             # LP-Spec L band + objective-optimal L
 """
 
 import argparse
-import os
-import sys
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-capim_dir = os.path.dirname(os.path.dirname(script_dir))
-sys.path.insert(0, capim_dir)
+from sim.config.models import VICUNA_7B
+from sim.drivers import autoregressive, capim, eagle_npu, lp_spec
+from sim.report import comparison_table, export_csv
+from sim.sweeps import sweep_lp_spec_L, sweep_sigma_th, trace_percentiles
+from sim.trace.schema import TraceDataset
+
+
+def _limit_prompts(trace: TraceDataset, max_prompts: int) -> TraceDataset:
+    if max_prompts <= 0:
+        return trace
+    keep = set()
+    steps = []
+    for s in trace.steps:
+        if s.prompt_id not in keep and len(keep) >= max_prompts:
+            continue
+        keep.add(s.prompt_id)
+        steps.append(s)
+    trace.steps = steps
+    return trace
+
+
+def _dataset(trace: TraceDataset) -> str:
+    # A trace covers exactly one dataset; the collector records it in metadata, and
+    # individual steps also carry it.
+    return trace.metadata.get("dataset") or (trace.steps[0].dataset if trace.steps else "unknown")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run CAPIM simulation")
-    parser.add_argument("--trace", type=str, required=True,
-                        help="Path to TraceDataset JSON (from collect_traces.py)")
-    parser.add_argument("--sigma-th", type=float, default=-4.0,
-                        help="Cumulative log-prob pruning threshold (default: -4.0; "
-                             "LLaMA-2 median ≈ -4.2)")
-    parser.add_argument("--mu-th", type=int, default=4,
-                        help="Tree size PIM/NPU routing threshold (default: 4; "
-                             "PAPI's α at RLP=1, crossover μ≈4)")
-    parser.add_argument("--sweep", choices=["none", "sigma", "mu", "joint"],
-                        default="none",
-                        help="Run a sensitivity sweep instead of a single point")
-    parser.add_argument("--output-dir", type=str, default="results",
-                        help="Directory for CSV/plot output")
-    parser.add_argument("--plot", action="store_true",
-                        help="Generate sensitivity plots (requires matplotlib)")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--eagle-trace", required=True,
+                    help="EAGLE trace (AR / EAGLE-2-NPU / CAPIM)")
+    ap.add_argument("--medusa-trace", default=None,
+                    help="MEDUSA trace (LP-Spec baseline); LP-Spec skipped if absent")
+    ap.add_argument("--sigma-th", type=float, default=-4.0)
+    ap.add_argument("--mu-th", type=int, default=4)
+    ap.add_argument("--lp-L", type=int, default=16, help="LP-Spec verified tree size")
+    ap.add_argument("--lp-selection", default="greedy_headk")
+    ap.add_argument("--max-prompts", type=int, default=0, help="0 = all")
+    ap.add_argument("--sweep-sigma", action="store_true")
+    ap.add_argument("--sweep-lp-L", action="store_true")
+    ap.add_argument("--csv", default=None)
+    args = ap.parse_args()
 
-    from sim.trace.schema import TraceDataset
-    from sim.config.models import LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B
-    from sim.baselines.autoregressive import simulate_autoregressive_from_trace
-    from sim.baselines.lp_spec import simulate_lp_spec_from_trace
-    from sim.simulation import simulate_capim
-    from sim.results import (
-        compare_results, sigma_sweep, mu_sweep, joint_sweep,
-        export_csv, plot_sensitivity,
-    )
+    model = VICUNA_7B
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"Loading EAGLE trace {args.eagle_trace} ...")
+    etrace = _limit_prompts(TraceDataset.load(args.eagle_trace), args.max_prompts)
+    dataset = _dataset(etrace)
+    print(f"  {len(etrace.steps)} steps, dataset={dataset}")
 
-    # Load trace
-    print(f"Loading trace: {args.trace}")
-    trace = TraceDataset.load(args.trace)
-    scenario = os.path.splitext(os.path.basename(args.trace))[0]
-    print(f"  {len(trace.steps)} steps, mean tree size {trace.mean_tree_size:.1f}")
+    mtrace = None
+    if args.medusa_trace:
+        print(f"Loading MEDUSA trace {args.medusa_trace} ...")
+        mtrace = _limit_prompts(TraceDataset.load(args.medusa_trace), args.max_prompts)
+        mds = _dataset(mtrace)
+        print(f"  {len(mtrace.steps)} steps, dataset={mds}")
+        assert mds == dataset, (
+            f"EAGLE/MEDUSA traces cover different datasets: {dataset} vs {mds}")
+    else:
+        print("  (no --medusa-trace -> LP-Spec baseline skipped)")
 
-    # Compute baselines (once)
-    print("\nComputing baselines...")
-    ar = simulate_autoregressive_from_trace(LLAMA2_7B, trace)
-    lp = simulate_lp_spec_from_trace(LLAMA2_7B, trace)
-    print(f"  AR:      {ar.tokens_per_second:.1f} tok/s, {ar.energy_per_token_j*1000:.2f} mJ/tok")
-    print(f"  LP-Spec: {lp.tokens_per_second:.1f} tok/s, {lp.energy_per_token_j*1000:.2f} mJ/tok")
+    pcts = trace_percentiles(etrace)
+    print(f"  cumulative_log_prob percentiles p10/p50/p90 = "
+          f"{pcts[10]:.2f} / {pcts[50]:.2f} / {pcts[90]:.2f}")
 
-    baseline_kwargs = dict(
-        ar_latency_per_token=ar.latency_per_token_s,
-        lp_latency_per_token=lp.latency_per_token_s,
-        lp_energy_per_token=lp.energy_per_token_j,
-    )
+    print("\nRunning drivers ...")
+    ar = autoregressive.simulate(model, etrace)
+    en = eagle_npu.simulate(model, etrace)
+    cap = capim.simulate(model, etrace,
+                         capim.CapimConfig(sigma_th=args.sigma_th, mu_th=args.mu_th))
+    results = [ar, en, cap]
+    if mtrace is not None:
+        lp = lp_spec.simulate(model, mtrace,
+                              lp_spec.LPSpecConfig(L=args.lp_L, selection=args.lp_selection))
+        results.insert(2, lp)
 
-    if args.sweep == "none":
-        # Single-point evaluation
-        capim = simulate_capim(
-            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
-            sigma_th=args.sigma_th, mu_th=args.mu_th,
-            scenario=scenario, **baseline_kwargs,
-        )
-        print(compare_results(
-            capim,
-            ar_energy_per_token=ar.energy_per_token_j,
-            ar_latency_per_token=ar.latency_per_token_s,
-            lp_energy_per_token=lp.energy_per_token_j,
-            lp_latency_per_token=lp.latency_per_token_s,
-        ))
-        csv_path = os.path.join(args.output_dir, f"{scenario}_single.csv")
-        export_csv([capim], csv_path)
-        print(f"Saved to {csv_path}")
+    print(f"\n=== {dataset} ===")
+    base = "LP-Spec" if mtrace is not None else "EAGLE-2/NPU"
+    print(comparison_table(results, baseline_driver=base))
 
-    elif args.sweep == "sigma":
-        import math
-        # Calibrated from the LLaMA-2 cumulative_log_prob distribution (AUDIT.md #7):
-        #   Alpaca: p10=-5.95 p50=-4.23 p90=-1.98
-        #   GSM8K:  p10=-7.93 p50=-4.42 p90=-1.52  (heavier tail)
-        # Grid spans no-pruning to aggressive, covering both datasets' ranges.
-        sigma_values = [float("-inf"), -10.0, -8.0, -6.0, -5.0, -4.5, -4.0,
-                        -3.5, -3.0, -2.5, -2.0, -1.5]
-        print(f"\nSweeping σ_th over {sigma_values}...")
-        results = sigma_sweep(
-            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
-            sigma_values=sigma_values, mu_th=args.mu_th,
-            scenario=scenario, **baseline_kwargs,
-        )
-        csv_path = os.path.join(args.output_dir, f"{scenario}_sigma_sweep.csv")
-        export_csv(results, csv_path)
-        print(f"Saved {len(results)} rows to {csv_path}")
-        _print_sweep_table(results, "sigma_th")
-        if args.plot:
-            plot_path = os.path.join(args.output_dir, f"{scenario}_sigma_sweep.png")
-            plot_sensitivity(results, "sigma_th", save_path=plot_path)
+    if args.sweep_sigma:
+        print("\n=== σ_th sweep (pruning vs false-neg) ===")
+        sigmas = [float("-inf"), pcts[90], pcts[50], pcts[10], -2.5]
+        for p in sweep_sigma_th(etrace, sigmas):
+            print(f"  σ={p.sigma_th:>7.2f}  prune={p.pruning_ratio:5.1%}  "
+                  f"false_neg={p.false_neg_rate:5.1%}  mean_μ={p.mean_mu:5.1f}")
 
-    elif args.sweep == "mu":
-        mu_values = [1, 3, 5, 8, 10, 15, 20, 30, 50, 100]
-        print(f"\nSweeping μ_th over {mu_values}...")
-        results = mu_sweep(
-            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
-            mu_values=mu_values, sigma_th=args.sigma_th,
-            scenario=scenario, **baseline_kwargs,
-        )
-        csv_path = os.path.join(args.output_dir, f"{scenario}_mu_sweep.csv")
-        export_csv(results, csv_path)
-        print(f"Saved {len(results)} rows to {csv_path}")
-        _print_sweep_table(results, "mu_th")
-        if args.plot:
-            plot_path = os.path.join(args.output_dir, f"{scenario}_mu_sweep.png")
-            plot_sensitivity(results, "mu_th", save_path=plot_path)
+    if args.sweep_lp_L and mtrace is not None:
+        print("\n=== LP-Spec L sweep ===")
+        sw = sweep_lp_spec_L(model, mtrace, selection=args.lp_selection)
+        for L in sorted(sw.by_L):
+            s = sw.by_L[L]
+            print(f"  L={L:>3}  token/s={s.token_per_s_mean:7.2f}  "
+                  f"token/J={s.token_per_j_mean:7.2f}  EDP={s.edp_mean:8.3g}")
+        print(f"  best L (throughput) = {sw.best_L_throughput}, "
+              f"best L (energy) = {sw.best_L_energy}, tree_size = {sw.tree_size}")
 
-    elif args.sweep == "joint":
-        import math
-        sigma_values = [float("-inf"), -6.0, -4.5, -3.0, -2.0]
-        mu_values = [2, 4, 8, 16]  # centered on the μ≈4 PIM/NPU crossover
-        print(f"\n2D sweep: σ_th × μ_th ({len(sigma_values)}×{len(mu_values)} grid)...")
-        grid = joint_sweep(
-            trace, LLAMA2_7B, EAGLE_HEAD_LLAMA2_7B,
-            sigma_values=sigma_values, mu_values=mu_values,
-            scenario=scenario, **baseline_kwargs,
-        )
-        results = list(grid.values())
-        csv_path = os.path.join(args.output_dir, f"{scenario}_joint_sweep.csv")
-        export_csv(results, csv_path)
-        print(f"Saved {len(results)} rows to {csv_path}")
-        # Print best point by energy
-        best = min(results, key=lambda r: r.energy_per_token_j)
-        print(f"\nBest energy point: σ_th={best.sigma_th}, μ_th={best.mu_th}")
-        print(f"  {best.energy_per_token_j*1000:.3f} mJ/tok, "
-              f"{best.tokens_per_second:.1f} tok/s, "
-              f"speedup_vs_ar={best.speedup_vs_ar:.2f}x")
-
-
-def _print_sweep_table(results, param_name):
-    print(f"\n{'─'*75}")
-    print(f"{'σ_th' if param_name=='sigma_th' else 'μ_th':>8}  "
-          f"{'tok/s':>8}  {'mJ/tok':>8}  "
-          f"{'spdup_AR':>10}  {'spdup_LP':>10}  "
-          f"{'e_red_LP':>10}  {'PIM%':>6}  {'FN%':>6}")
-    print(f"{'─'*75}")
-    for r in results:
-        val = getattr(r, param_name)
-        val_str = f"{val:.1f}" if val != float("-inf") else "-inf"
-        e_red = r.energy_reduction_vs_lp
-        e_red_str = f"{e_red*100:.1f}%" if e_red == e_red else "n/a"
-        ls = r.latency_speedup_vs_lp
-        ls_str = f"{ls:.2f}x" if ls == ls else "n/a"
-        print(f"{val_str:>8}  {r.tokens_per_second:>8.1f}  "
-              f"{r.energy_per_token_j*1000:>8.3f}  "
-              f"{r.speedup_vs_ar:>10.2f}x  {ls_str:>10}  "
-              f"{e_red_str:>10}  {r.pim_fraction*100:>6.0f}%  "
-              f"{r.mean_false_neg_rate*100:>6.2f}%")
-    print(f"{'─'*75}")
+    if args.csv:
+        export_csv(results, args.csv)
+        print(f"\nWrote {args.csv}")
 
 
 if __name__ == "__main__":

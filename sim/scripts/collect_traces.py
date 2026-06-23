@@ -14,12 +14,15 @@ Usage:
     # LLaMA-2-7B-Chat (default) — Alpaca traces
     python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 200
 
-    # Vicuna-7B — same prompts, for direct LP-Spec comparison
+    # Vicuna-7B EAGLE-2 (CAPIM side) — Alpaca traces
     python sim/scripts/collect_traces.py --model-family vicuna7b --dataset alpaca --n-prompts 200
 
+    # Vicuna-7B MEDUSA (LP-Spec baseline) — SAME backbone, SAME prompts (symmetric)
+    python sim/scripts/collect_traces.py --model-family vicuna7b --method medusa --dataset alpaca --n-prompts 200
+
     # Sanity check: 20 built-in prompts, no dataset download needed
-    python sim/scripts/collect_traces.py --sanity
     python sim/scripts/collect_traces.py --model-family vicuna7b --sanity
+    python sim/scripts/collect_traces.py --model-family vicuna7b --method medusa --sanity
 
     # Dry run: check everything loads without running full inference
     python sim/scripts/collect_traces.py --dataset alpaca --n-prompts 3 --dry-run
@@ -35,11 +38,10 @@ Model families (set via --model-family):
 
 --base-model and --ea-model override the model-family defaults.
 
-Output (examples):
-    traces/llama2_alpaca.json
-    traces/llama2_gsm8k.json
-    traces/vicuna7b_alpaca.json
-    traces/vicuna7b_gsm8k.json
+Output is namespaced by family + method + dataset (so EAGLE and MEDUSA traces
+never clobber each other), e.g.:
+    traces/vicuna7b_eagle_alpaca.json     traces/vicuna7b_medusa_alpaca.json
+    traces/vicuna7b_eagle_gsm8k.json      traces/vicuna7b_medusa_gsm8k.json
 """
 
 import argparse
@@ -52,9 +54,11 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 capim_dir = os.path.dirname(os.path.dirname(script_dir))
 sys.path.insert(0, capim_dir)
 
-# Add the EAGLE repo to path
+# Add the EAGLE + Medusa repos to path (eagle.* / medusa.* imports)
 eagle_dir = os.path.join(capim_dir, "releted-repos", "EAGLE")
 sys.path.insert(0, eagle_dir)
+medusa_dir = os.path.join(capim_dir, "releted-repos", "Medusa")
+sys.path.insert(0, medusa_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +120,14 @@ MODEL_CONFIGS = {
     "vicuna7b": {
         "base_model": "lmsys/vicuna-7b-v1.3",
         "ea_model":   "yuhuili/EAGLE-Vicuna-7B-v1.3",
+        "medusa_model": "FasterDecoding/medusa-vicuna-7b-v1.3",  # base auto-loaded from head config
         "output_prefix": "vicuna7b",
         "prompt_format": "vicuna",         # manual format (no chat_template in tokenizer)
     },
 }
+# NOTE: only vicuna7b has BOTH an official EAGLE head and an official MEDUSA head
+# on the SAME backbone -> the symmetric, both-measured comparison lives here.
+# llama2-chat has no official MEDUSA head, so --method medusa is unavailable there.
 
 
 def format_prompt(prompt: str, tokenizer, prompt_format: str) -> str:
@@ -232,6 +240,63 @@ def load_eagle_model(
     return model, tokenizer
 
 
+def precision_label(load_in_4bit: bool = False, load_in_8bit: bool = False) -> str:
+    """Canonical precision tag recorded in trace metadata for provenance.
+
+    This labels HOW the model was run during collection, which shapes the
+    acceptance/confidence statistics only -- the hardware cost model is
+    INT8/W8A8 regardless of this value.  Note these bitsandbytes modes are NOT
+    the simulator's W8A8 datapath: 8-bit is LLM.int8() (INT8 weight store +
+    FP16 activations with an FP16 outlier path), 4-bit is NF4 dequantized to
+    FP16 for compute.  Collect EAGLE and MEDUSA at the SAME precision so the
+    comparison stays symmetric.
+    """
+    if load_in_4bit:
+        return "nf4-4bit (bitsandbytes, FP16 compute)"
+    if load_in_8bit:
+        return "llm.int8()-8bit (bitsandbytes, FP16 compute)"
+    return "fp16"
+
+
+def load_medusa_model(
+    medusa_model_id: str,
+    load_in_4bit: bool = False,
+    load_in_8bit: bool = False,
+):
+    """
+    Load a MedusaModel from HuggingFace (LP-Spec baseline).
+
+    Only the Medusa head repo is needed -- MedusaModel.from_pretrained reads the
+    base model from the head's config and loads it automatically (e.g.
+    FasterDecoding/medusa-vicuna-7b-v1.3 -> lmsys/vicuna-7b-v1.3).
+
+    Returns:
+        (medusa_model, tokenizer) tuple.
+    """
+    import torch
+    from medusa.model.medusa_model import MedusaModel
+
+    print(f"Loading Medusa model: {medusa_model_id}")
+
+    kwargs = {
+        "torch_dtype": torch.float16,
+        "low_cpu_mem_usage": True,
+        "device_map": "auto",
+    }
+    if load_in_4bit:
+        kwargs["load_in_4bit"] = True
+        print("Using 4-bit quantization")
+    elif load_in_8bit:
+        kwargs["load_in_8bit"] = True
+        print("Using 8-bit quantization")
+
+    model = MedusaModel.from_pretrained(medusa_model_id, **kwargs)
+    model.eval()
+    tokenizer = model.get_tokenizer()
+    print("Model loaded successfully")
+    return model, tokenizer
+
+
 # ---------------------------------------------------------------------------
 # Instrumented inference loop
 # ---------------------------------------------------------------------------
@@ -244,6 +309,8 @@ def run_collection(
     prompt_format: str = "chat_template",
     model_draft_name: str = "EAGLE2",
     max_new_tokens: int = 200,
+    precision: str = "fp16",
+    method: str = "eagle",
     dry_run: bool = False,
 ) -> "TraceDataset":
     """
@@ -252,8 +319,11 @@ def run_collection(
     Returns a TraceDataset with per-token confidence scores logged.
     """
     import torch
-    from sim.trace.collector import Collector
     from sim.trace.schema import TraceDataset, DecodeStepTrace
+    if method == "medusa":
+        from sim.trace.medusa_collector import MedusaCollector
+    else:
+        from sim.trace.eagle_collector import Collector
 
     if dry_run:
         prompts = prompts[:2]
@@ -266,12 +336,21 @@ def run_collection(
     for i, prompt in enumerate(prompts):
         print(f"  [{i+1}/{total}] Prompt: {prompt[:60]}...")
 
-        collector = Collector(
-            dataset=dataset,
-            prompt_id=i,
-            model_target=model.base_model_name_or_path,
-            model_draft=model_draft_name,
-        )
+        if method == "medusa":
+            collector = MedusaCollector(
+                dataset=dataset,
+                prompt_id=i,
+                model_target=model.base_model_name_or_path,
+                model_draft=model_draft_name,
+                precision=precision,
+            )
+        else:
+            collector = Collector(
+                dataset=dataset,
+                prompt_id=i,
+                model_target=model.base_model_name_or_path,
+                model_draft=model_draft_name,
+            )
         collector.attach(model)
 
         try:
@@ -281,14 +360,26 @@ def run_collection(
             )
 
             with torch.no_grad():
-                model.eagenerate(
-                    input_ids,
-                    is_llama3=False,
-                    temperature=0,
-                    top_p=0,
-                    top_k=0,
-                    max_new_tokens=max_new_tokens,
-                )
+                if method == "medusa":
+                    # medusa_generate is a GENERATOR -> iterate it to drive the
+                    # decode loop (which triggers the collector's hooks).  max_steps
+                    # bounds decode STEPS (each yields >=1 token), the MEDUSA analog
+                    # of eagenerate's max_new_tokens token budget.
+                    for _ in model.medusa_generate(
+                        input_ids,
+                        temperature=0.0,
+                        max_steps=max_new_tokens,
+                    ):
+                        pass
+                else:
+                    model.eagenerate(
+                        input_ids,
+                        is_llama3=False,
+                        temperature=0,
+                        top_p=0,
+                        top_k=0,
+                        max_new_tokens=max_new_tokens,
+                    )
         except Exception as e:
             print(f"    WARNING: inference failed: {e}")
         finally:
@@ -309,6 +400,8 @@ def run_collection(
             "dataset": dataset,
             "n_prompts": len(prompts),
             "max_new_tokens": max_new_tokens,
+            "precision": precision,
+            "sd_method": method,
         },
     )
     td.compute_summary()
@@ -321,7 +414,7 @@ def run_collection(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Collect CAPIM traces from EAGLE-2 inference"
+        description="Collect CAPIM traces from EAGLE-2 (CAPIM) or MEDUSA (LP-Spec) inference"
     )
     parser.add_argument(
         "--model-family",
@@ -363,7 +456,22 @@ def main():
         type=str,
         default=None,
         help="HuggingFace repo ID or local path for the EAGLE draft model "
-             "(overrides --model-family default)",
+             "(overrides --model-family default; used only with --method eagle)",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["eagle", "medusa"],
+        default="eagle",
+        help="SD method to run/instrument: 'eagle' (CAPIM/EAGLE-2 head) or "
+             "'medusa' (LP-Spec baseline; needs a model-family with a medusa "
+             "head, e.g. vicuna7b). (default: eagle)",
+    )
+    parser.add_argument(
+        "--medusa-model",
+        type=str,
+        default=None,
+        help="HuggingFace repo ID or local path for the MEDUSA head "
+             "(overrides --model-family default; used only with --method medusa)",
     )
     parser.add_argument(
         "--output-dir",
@@ -400,10 +508,21 @@ def main():
     # Resolve model config: model-family sets defaults; explicit args override
     cfg = MODEL_CONFIGS[args.model_family]
     base_model_id  = args.base_model  or cfg["base_model"]
-    ea_model_id    = args.ea_model    or cfg["ea_model"]
     output_prefix  = cfg["output_prefix"]
     prompt_format  = cfg["prompt_format"]
-    model_draft_name = ea_model_id.split("/")[-1]  # e.g. "EAGLE-Vicuna-7B-v1.3"
+
+    if args.method == "medusa":
+        medusa_model_id = args.medusa_model or cfg.get("medusa_model")
+        if not medusa_model_id:
+            parser.error(
+                f"--method medusa needs a MEDUSA head, but model-family "
+                f"'{args.model_family}' has none. Use --model-family vicuna7b "
+                f"or pass --medusa-model."
+            )
+        model_draft_name = medusa_model_id.split("/")[-1]  # e.g. "medusa-vicuna-7b-v1.3"
+    else:
+        ea_model_id = args.ea_model or cfg["ea_model"]
+        model_draft_name = ea_model_id.split("/")[-1]       # e.g. "EAGLE-Vicuna-7B-v1.3"
 
     # Resolve prompts, dataset label, output path, and token budget
     os.makedirs(args.output_dir, exist_ok=True)
@@ -412,25 +531,33 @@ def main():
         dataset_label = "sanity"
         prompts = SANITY_PROMPTS
         max_new_tokens = args.max_new_tokens if args.max_new_tokens != 200 else 100
-        output_path = os.path.join(args.output_dir, f"{output_prefix}_sanity.json")
+        output_path = os.path.join(args.output_dir, f"{output_prefix}_{args.method}_sanity.json")
         print(f"\n=== Step 1: Using {len(prompts)} built-in sanity prompts ===")
         print("(No dataset download required)")
     else:
         dataset_label = args.dataset
         max_new_tokens = args.max_new_tokens
-        output_path = os.path.join(args.output_dir, f"{output_prefix}_{args.dataset}.json")
+        output_path = os.path.join(args.output_dir, f"{output_prefix}_{args.method}_{args.dataset}.json")
         print(f"\n=== Step 1: Loading {args.dataset} prompts ===")
         loader = DATASET_LOADERS[args.dataset]
         prompts = loader(args.n_prompts)
 
     # Load model
-    print(f"\n=== Step 2: Loading EAGLE-2 model ===")
-    model, tokenizer = load_eagle_model(
-        base_model_id=base_model_id,
-        ea_model_id=ea_model_id,
-        load_in_4bit=args.load_in_4bit,
-        load_in_8bit=args.load_in_8bit,
-    )
+    precision = precision_label(args.load_in_4bit, args.load_in_8bit)
+    print(f"\n=== Step 2: Loading {args.method.upper()} model (precision: {precision}) ===")
+    if args.method == "medusa":
+        model, tokenizer = load_medusa_model(
+            medusa_model_id=medusa_model_id,
+            load_in_4bit=args.load_in_4bit,
+            load_in_8bit=args.load_in_8bit,
+        )
+    else:
+        model, tokenizer = load_eagle_model(
+            base_model_id=base_model_id,
+            ea_model_id=ea_model_id,
+            load_in_4bit=args.load_in_4bit,
+            load_in_8bit=args.load_in_8bit,
+        )
 
     # Collect traces
     print(f"\n=== Step 3: Collecting traces ({len(prompts)} prompts) ===")
@@ -442,6 +569,8 @@ def main():
         prompt_format=prompt_format,
         model_draft_name=model_draft_name,
         max_new_tokens=max_new_tokens,
+        precision=precision,
+        method=args.method,
         dry_run=args.dry_run,
     )
 

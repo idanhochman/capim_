@@ -156,29 +156,34 @@ python sim/scripts/collect_traces.py \
 
 ## Running the simulation
 
-Once you have trace files, the simulation runs entirely on CPU:
+Once you have trace files, the simulation runs entirely on CPU.  Two traces are
+consumed per run, both for the **same dataset**: an **EAGLE** trace (AR /
+EAGLE-2-NPU / CAPIM) and a **MEDUSA** trace (the LP-Spec baseline + its DTP).
 
 ```bash
-# Single evaluation point
-python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json
+# Single evaluation point (all four drivers)
+python -m sim.scripts.run_simulation \
+    --eagle-trace traces/vicuna7b_eagle_alpaca.json \
+    --medusa-trace traces/vicuna7b_medusa_alpaca.json
 
-# With specific thresholds
-python sim/scripts/run_simulation.py \
-    --trace traces/llama2_alpaca.json \
-    --sigma-th -2.0 \
-    --mu-th 10
+# With specific thresholds (CAPIM σ_th/μ_th, LP-Spec L)
+python -m sim.scripts.run_simulation \
+    --eagle-trace traces/vicuna7b_eagle_alpaca.json \
+    --medusa-trace traces/vicuna7b_medusa_alpaca.json \
+    --sigma-th -2.0 --mu-th 4 --lp-L 16
 
-# Sweep σ_th to find the optimal pruning threshold
-python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json --sweep sigma
+# Sweep σ_th to find the CAPIM pruning knee
+python -m sim.scripts.run_simulation \
+    --eagle-trace traces/vicuna7b_eagle_alpaca.json --sweep-sigma
 
-# 2D grid search over (σ_th, μ_th)
-python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json --sweep joint
-
-# Save sensitivity plots (requires matplotlib)
-python sim/scripts/run_simulation.py --trace traces/llama2_alpaca.json --sweep sigma --plot
+# Sweep LP-Spec's verified tree size L (band + objective-optimal L)
+python -m sim.scripts.run_simulation \
+    --eagle-trace traces/vicuna7b_eagle_alpaca.json \
+    --medusa-trace traces/vicuna7b_medusa_alpaca.json --sweep-lp-L
 ```
 
-Results are saved to `results/` as CSV files.
+If `--medusa-trace` is omitted, the LP-Spec baseline is skipped (the comparison
+is then anchored on EAGLE-2/NPU).  Optionally pass `--csv path.csv` to export.
 
 ---
 
@@ -202,12 +207,16 @@ Results are saved to `results/` as CSV files.
 
 | Argument | Default | Description |
 |---|---|---|
-| `--trace` | required | Path to trace JSON |
-| `--sigma-th` | `-2.0` | Log-prob pruning threshold |
-| `--mu-th` | `10` | Tree size routing threshold |
-| `--sweep` | `none` | `none`, `sigma`, `mu`, or `joint` |
-| `--output-dir` | `results` | Directory for CSV output |
-| `--plot` | off | Save sensitivity plots (requires matplotlib) |
+| `--eagle-trace` | required | EAGLE trace JSON (AR / EAGLE-2-NPU / CAPIM) |
+| `--medusa-trace` | none | MEDUSA trace JSON (LP-Spec); skipped if absent |
+| `--sigma-th` | `-4.0` | CAPIM log-prob pruning threshold |
+| `--mu-th` | `4` | CAPIM tree-size routing threshold |
+| `--lp-L` | `16` | LP-Spec verified tree size |
+| `--lp-selection` | `greedy_headk` | DTP selector: `greedy_headk`, `greedy_node`, `first_l`, `full`, `oracle` |
+| `--max-prompts` | `0` | Limit prompts (0 = all) |
+| `--sweep-sigma` | off | σ_th pruning-vs-false-neg sweep (CAPIM) |
+| `--sweep-lp-L` | off | LP-Spec L band + objective-optimal L |
+| `--csv` | none | Export per-driver summary CSV |
 
 ---
 

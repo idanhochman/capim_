@@ -104,6 +104,23 @@ LLAMA2_7B = ModelConfig(
     bytes_per_param=1,   # INT8 quantization
 )
 
+# Target model: lmsys/vicuna-7b-v1.3 — the project's actual backbone (CLAUDE.md §7).
+# Vicuna-7B-v1.3 is fine-tuned from LLaMA-1 but shares LLaMA-2-7B's architecture
+# exactly (RMSNorm + SwiGLU + RoPE, 4096/32/32/11008/32000, MHA), so every shape,
+# FLOP and byte count is identical to LLAMA2_7B — only the name differs.  Chosen
+# because it is the only 7B target with BOTH an official EAGLE head and an official
+# MEDUSA head, enabling an apples-to-apples CAPIM vs LP-Spec comparison.
+VICUNA_7B = ModelConfig(
+    name="Vicuna-7B-v1.3",
+    d_model=4096,
+    n_heads=32,
+    n_kv_heads=32,       # MHA (no GQA on the 7B model)
+    n_layers=32,
+    intermediate_size=11008,
+    vocab_size=32000,
+    bytes_per_param=1,   # INT8 quantization
+)
+
 # EAGLE draft head for LLaMA-2-7B-Chat (yuhuili/EAGLE-llama2-chat-7B).
 # The EAGLE "draft model" is a lightweight head — a single decoder layer at the
 # target's dimensions plus a fusion FC — trained to predict the target's hidden

@@ -260,3 +260,195 @@ def make_synthetic_trace(
     )
     td.compute_summary()
     return td
+
+
+# ---------------------------------------------------------------------------
+# Synthetic MEDUSA trace (for the LP-Spec DTP driver — GPU-free testing)
+# ---------------------------------------------------------------------------
+#
+# A MEDUSA trace differs from an EAGLE trace in three ways the LP-Spec driver
+# relies on:
+#   1. The draft tree is STATIC: every step verifies the same full tree shape.
+#   2. Confidence (log_prob) is not the control signal — LP-Spec's DTP scores
+#      nodes from a per-(head, k) acceptance histogram measured at runtime.
+#      `k` = the rank of a head's prediction = "rank among same-parent siblings",
+#      which the driver derives from `parent_idx` (NOT a stored field).
+#   3. Acceptance is a single connected path from the root (the longest accepted
+#      prefix), exactly as MEDUSA's tree-attention verification commits one path.
+#
+# For the derived-k_pred trick to work, same-parent siblings must be stored
+# contiguously and in ascending-k order.  We guarantee this by ordering each
+# depth layer lexicographically by path (mirrors MEDUSA's (len, lex) sort).
+
+
+def balanced_medusa_choices(branching: int = 2, max_depth: int = 3) -> List[List[int]]:
+    """MEDUSA-format choices for a balanced tree: every internal node has
+    `branching` children with k = 0..branching-1, down to `max_depth` levels.
+
+    Each entry is a path of prediction ranks, e.g. [0, 1] = take head-0's
+    top-0 prediction, then head-1's top-1 prediction.  This is the same format
+    as `sim.layers.medusa.MC_SIM_7B_63`.
+    """
+    choices: List[List[int]] = []
+
+    def grow(prefix: List[int], depth: int) -> None:
+        if depth >= max_depth:
+            return
+        for k in range(branching):
+            path = prefix + [k]
+            choices.append(path)
+            grow(path, depth + 1)
+
+    grow([], 0)
+    return choices
+
+
+def make_synthetic_medusa_trace(
+    n_steps: int = 100,
+    tree_choices: Optional[List[List[int]]] = None,
+    branching: int = 2,
+    max_depth: int = 3,
+    base_accept_prob: float = 0.7,
+    depth_decay: float = 0.85,
+    rank_decay: float = 0.55,
+    dataset: str = "synthetic",
+    seed: int = 42,
+) -> TraceDataset:
+    """Generate a synthetic MEDUSA TraceDataset for the LP-Spec DTP driver.
+
+    The tree shape is identical every step (static MEDUSA tree).  Per step we
+    sample one connected accepted path from the root: at each level there is a
+    correct child with probability `base_accept_prob * depth_decay**depth`, and
+    when there is one, its rank is drawn from a stationary categorical favouring
+    low k (weight `rank_decay**k`).  Stationarity is what lets the DTP histogram
+    converge — mirroring real MEDUSA behaviour and making the trace meaningful
+    for the retrospective per-(head, k) estimator.
+
+    Args:
+        tree_choices: MEDUSA-format paths.  Defaults to a balanced tree built
+            from `branching`/`max_depth`.  Pass `MC_SIM_7B_63` for realism.
+    """
+    import random
+    import math
+
+    rng = random.Random(seed)
+
+    if tree_choices is None:
+        tree_choices = balanced_medusa_choices(branching, max_depth)
+
+    # Order each depth layer lexicographically so same-parent siblings are
+    # contiguous and ascending in k (the property the driver's k_pred relies on).
+    paths = sorted(tree_choices, key=lambda p: (len(p), p))
+    max_d = max(len(p) for p in paths) - 1
+
+    # layer_paths[d] = lex-sorted paths at depth d; index within = layer_idx.
+    layer_paths: List[List[List[int]]] = [[] for _ in range(max_d + 1)]
+    for p in paths:
+        layer_paths[len(p) - 1].append(p)
+
+    # Build a static node template (structure is identical across steps).
+    # template[i] = (depth, layer_idx, parent_idx, k_pred)
+    template = []
+    path_to_layeridx: Dict[tuple, int] = {}
+    for d in range(max_d + 1):
+        for li, p in enumerate(layer_paths[d]):
+            path_to_layeridx[tuple(p)] = li
+    for d in range(max_d + 1):
+        for li, p in enumerate(layer_paths[d]):
+            if d == 0:
+                parent_idx = -1
+            else:
+                parent_idx = path_to_layeridx[tuple(p[:-1])]
+            template.append((d, li, parent_idx, p[-1]))
+
+    # children[(depth, parent_idx)] = list of (global_idx, k_pred, layer_idx)
+    children: Dict[tuple, List[tuple]] = {}
+    for gidx, (d, li, parent_idx, k) in enumerate(template):
+        children.setdefault((d, parent_idx), []).append((gidx, k, li))
+
+    steps = []
+    for i in range(n_steps):
+        # Decide the accepted path (connected chain from the root).
+        accepted_ids = set()
+        parent_layer_idx = -1
+        for d in range(max_d + 1):
+            sibs = children.get((d, parent_layer_idx))
+            if not sibs:
+                break
+            if rng.random() > base_accept_prob * (depth_decay ** d):
+                break  # no correct child at this level -> path stops
+            weights = [rank_decay ** k for (_, k, _) in sibs]
+            total = sum(weights)
+            r = rng.random() * total
+            chosen = sibs[-1]
+            acc = 0.0
+            for s, w in zip(sibs, weights):
+                acc += w
+                if r <= acc:
+                    chosen = s
+                    break
+            gidx, _, li = chosen
+            accepted_ids.add(gidx)
+            parent_layer_idx = li
+
+        # Materialise nodes with plausible (unused-by-DTP) confidence values.
+        nodes: List[TokenNode] = []
+        cum_by_gidx: Dict[int, float] = {}
+        for gidx, (d, li, parent_idx, k) in enumerate(template):
+            lp = -0.3 - 0.7 * k + rng.gauss(0, 0.1)
+            lp = min(lp, -1e-4)
+            if d == 0:
+                cum = lp
+            else:
+                # parent global idx = the depth-(d-1) node with layer_idx==parent_idx
+                cum = cum_by_gidx[_parent_global_idx(template, d, parent_idx)] + lp
+            cum_by_gidx[gidx] = cum
+            nodes.append(
+                TokenNode(
+                    depth=d,
+                    token_id=rng.randint(0, 31999),
+                    log_prob=lp,
+                    cumulative_log_prob=cum,
+                    parent_idx=parent_idx,
+                    accepted=(gidx in accepted_ids),
+                    layer_idx=li,
+                )
+            )
+
+        steps.append(
+            DecodeStepTrace(
+                step_id=i,
+                context_length=128 + i,
+                nodes=nodes,
+                accepted_length=len(accepted_ids),
+                dataset=dataset,
+                prompt_id=0,
+            )
+        )
+
+    td = TraceDataset(
+        steps=steps,
+        model_target="Vicuna-7B-v1.3",
+        model_draft="medusa-vicuna-7b-v1.3",
+        metadata={
+            "synthetic": True,
+            "method": "medusa",
+            "static_tree": True,
+            "tree_size": len(template),
+            "seed": seed,
+        },
+    )
+    td.compute_summary()
+    return td
+
+
+def _parent_global_idx(template, depth: int, parent_layer_idx: int) -> int:
+    """Global node index of the depth-(depth-1) node with the given layer_idx.
+
+    Nodes in `template` are grouped by depth ascending, so we scan the previous
+    depth layer for the matching layer_idx.
+    """
+    for gidx, (d, li, _parent, _k) in enumerate(template):
+        if d == depth - 1 and li == parent_layer_idx:
+            return gidx
+    raise ValueError(f"no parent at depth {depth - 1} with layer_idx {parent_layer_idx}")
