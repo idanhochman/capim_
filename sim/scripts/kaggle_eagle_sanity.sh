@@ -25,9 +25,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 echo "==> repo root: $REPO_ROOT"
 
-# --- python dependencies (pinned: see kaggle_medusa_sanity.sh for rationale) --
+# --- python dependencies -----------------------------------------------------
+# NOTE: EAGLE pins a DIFFERENT transformers than MEDUSA. The vendored EAGLE
+# modeling imports transformers.modeling_rope_utils.ROPE_INIT_FUNCTIONS, added
+# in transformers 4.43 -> 4.36.2 (used for MEDUSA) fails with ModuleNotFoundError.
+# We target the [4.43, 4.49] window: >=4.43 for modeling_rope_utils, <4.50 to
+# avoid the loader rewrite that broke MEDUSA under quant. EAGLE and MEDUSA are
+# separate collection runs producing independent JSON traces, so a per-method
+# transformers version does NOT affect comparison fairness (same Vicuna weights,
+# same 8-bit precision, same prompts).
 echo "==> installing python deps (this takes 1-2 min) ..."
-pip install "transformers==4.36.2" "accelerate==0.25.0" bitsandbytes datasets sentencepiece protobuf
+pip install "transformers==4.46.3" "accelerate==1.0.1" bitsandbytes datasets sentencepiece protobuf
 
 # --- runtime info ------------------------------------------------------------
 echo "==> GPU:";  nvidia-smi --query-gpu=name,memory.total --format=csv || echo "  (no nvidia-smi / no GPU)"
