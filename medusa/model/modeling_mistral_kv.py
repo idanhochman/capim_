@@ -20,10 +20,20 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    is_flash_attn_available,
     logging,
     replace_return_docstrings,
 )
+# CAPIM vendor shim: newer transformers renamed/removed is_flash_attn_available
+# (-> is_flash_attn_2_available, removed ~4.44). This self-contained KV-Mistral
+# does not need flash-attn for batch=1 trace collection, so degrade gracefully.
+try:
+    from transformers.utils import is_flash_attn_available
+except ImportError:
+    try:
+        from transformers.utils import is_flash_attn_2_available as is_flash_attn_available
+    except ImportError:
+        def is_flash_attn_available():
+            return False
 from transformers.models.mistral.configuration_mistral import MistralConfig
 
 
