@@ -691,6 +691,14 @@ class LlamaPreTrainedModel(PreTrainedModel):
 
     def _init_weights(self, module):
         std = self.config.initializer_range
+        # Skip quantized weights (e.g. bitsandbytes 4-bit): their .data is a
+        # packed uint8/Byte tensor that .normal_() cannot fill ("normal_kernel_cpu
+        # not implemented for 'Byte'"), and re-initialising an already-loaded
+        # quantized weight would be wrong anyway. Transformers calls this on every
+        # module via model.apply(_initialize_weights) during from_pretrained.
+        weight = getattr(module, "weight", None)
+        if weight is not None and not weight.data.is_floating_point():
+            return
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.bias is not None:
