@@ -40,7 +40,7 @@ echo "==> RAM:";  free -h
 # --- MEDUSA sanity run -------------------------------------------------------
 echo "==> running MEDUSA sanity collection (python -u, live output) ..."
 python -u sim/scripts/collect_traces.py \
-    --model-family vicuna7b --method medusa --sanity --load-in-4bit
+    --model-family vicuna7b --method medusa --sanity
 
 echo ""
 echo "==> DONE. Inspect the saved sanity trace under traces/ ."
