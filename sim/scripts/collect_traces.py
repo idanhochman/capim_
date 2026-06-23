@@ -49,6 +49,13 @@ import json
 import os
 import sys
 
+# Stop transformers from importing TensorFlow/Flax — they reserve ~1-2GB of CPU
+# RAM we never use and contribute to the OOM-kill on a 12.7GB T4. Must be set
+# before transformers is imported (any of the model loaders below).
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
 # Add capim/ to path so sim.* imports work
 script_dir = os.path.dirname(os.path.abspath(__file__))
 capim_dir = os.path.dirname(os.path.dirname(script_dir))
@@ -230,12 +237,21 @@ def load_eagle_model(
         "use_eagle3": False,     # use EAGLE-2 (not EAGLE-3)
     }
 
-    if load_in_4bit:
-        kwargs["load_in_4bit"] = True
-        print("Using 4-bit quantization")
-    elif load_in_8bit:
-        kwargs["load_in_8bit"] = True
-        print("Using 8-bit quantization")
+    if load_in_4bit or load_in_8bit:
+        from transformers import BitsAndBytesConfig
+        # See load_medusa_model: explicit config + pin to GPU 0 to avoid
+        # accelerate's CPU-offload buffers OOM-killing a 12.7GB T4 mid-load.
+        if load_in_4bit:
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+            )
+            print("Using 4-bit quantization (pinned to GPU 0)")
+        else:
+            kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            print("Using 8-bit quantization (pinned to GPU 0)")
+        kwargs["device_map"] = {"": 0}
 
     model = EaModel.from_pretrained(**kwargs)
     model.eval()
@@ -285,18 +301,31 @@ def load_medusa_model(
     kwargs = {
         "torch_dtype": torch.float16,
         "low_cpu_mem_usage": True,
+        # Default to auto, but PIN to the GPU when quantizing (see below).
         "device_map": "auto",
         # Force safetensors: the base repo ships both .bin and .safetensors, and
         # .bin deserializes the whole 10GB shard into CPU RAM before quantization
         # (OOM-kills a 12.7GB T4). safetensors memory-maps straight to the GPU.
         "use_safetensors": True,
     }
-    if load_in_4bit:
-        kwargs["load_in_4bit"] = True
-        print("Using 4-bit quantization")
-    elif load_in_8bit:
-        kwargs["load_in_8bit"] = True
-        print("Using 8-bit quantization")
+    if load_in_4bit or load_in_8bit:
+        from transformers import BitsAndBytesConfig
+        # Explicit config (the bare load_in_4bit flag is deprecated) AND pin the
+        # whole model to GPU 0: with device_map="auto", accelerate plans CPU
+        # offload buffers that hold FP16 weights in CPU RAM during the load and
+        # OOM-kill a 12.7GB T4. The 4-bit model is ~4GB on-GPU, so it fits the
+        # T4's 15GB VRAM with no CPU copy needed.
+        if load_in_4bit:
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+            )
+            print("Using 4-bit quantization (pinned to GPU 0)")
+        else:
+            kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            print("Using 8-bit quantization (pinned to GPU 0)")
+        kwargs["device_map"] = {"": 0}
 
     model = MedusaModel.from_pretrained(medusa_model_id, **kwargs)
     model.eval()
