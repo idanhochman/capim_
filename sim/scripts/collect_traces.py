@@ -158,36 +158,21 @@ def format_prompt(prompt: str, tokenizer, prompt_format: str) -> str:
 # Sanity prompts (no dataset download required)
 # ---------------------------------------------------------------------------
 
-# 20 prompts spanning factual, instruction, math, code, and creative tasks.
+# 5 prompts spanning factual, instruction, math, and creative tasks.
 # Diversity in expected confidence is intentional: factual/formulaic prompts
 # should produce high-confidence draft tokens; open-ended creative prompts
 # should produce lower-confidence ones. This spread is what makes the sanity
 # run useful for validating the confidence-acceptance correlation.
 SANITY_PROMPTS = [
     # Factual / high confidence
-    "What is the capital of France?",
     "List the planets of the solar system in order from the Sun.",
-    "Translate 'Hello, how are you?' into Spanish.",
-    "What is the chemical formula for water?",
-    "Name the four seasons in order, starting from spring.",
     # Instruction / medium confidence
     "Write a Python function that returns the factorial of a non-negative integer n.",
-    "Explain the difference between supervised and unsupervised learning in two sentences.",
-    "What are the three laws of motion formulated by Isaac Newton?",
-    "Summarize the plot of Romeo and Juliet in two sentences.",
-    "How does photosynthesis work? Give a brief explanation.",
     # Math / reasoning
-    "If a train travels at 60 mph for 2.5 hours, how far does it travel?",
-    "What is the sum of the first 100 positive integers?",
     "A store sells apples for $0.50 each and oranges for $0.75 each. If I buy 3 apples and 4 oranges, how much do I spend in total?",
-    "Explain why 0.999... (repeating) equals 1.",
-    "A rectangle has a length of 8 cm and a width of 5 cm. What is its area and perimeter?",
     # Creative / open-ended / lower confidence
-    "Write a haiku about a rainy autumn evening.",
     "Write a short story (3-4 sentences) about a robot who discovers it can dream.",
     "Describe the colour blue to someone who has been blind from birth.",
-    "If you could add one subject to every school's curriculum, what would it be and why?",
-    "What might everyday life look like if humans required 12 hours of sleep per night?",
 ]
 
 
@@ -324,16 +309,30 @@ def load_medusa_model(
         # offload buffers that hold FP16 weights in CPU RAM during the load and
         # OOM-kill a 12.7GB T4. The 4-bit model is ~4GB on-GPU, so it fits the
         # T4's 15GB VRAM with no CPU copy needed.
+        # CRITICAL: keep the Medusa heads (and lm_head) in FP16, NOT quantized.
+        # MedusaModel.from_pretrained loads the base (quantized here) and then
+        # does `model.medusa_head.load_state_dict(fp16_weights, strict=False)`.
+        # If bnb has quantized medusa_head to int8/4bit modules, that load
+        # silently no-ops (strict=False) and the heads stay RANDOM -> uniform
+        # logits (log_prob == -ln(vocab)) -> ~0 acceptance. The heads are also
+        # exactly what produces the confidence scores we measure, so FP16 heads
+        # are the right choice for fidelity anyway. llm_int8_skip_modules works
+        # for both the 8-bit and 4-bit paths.
+        skip = ["lm_head", "medusa_head"]
         if load_in_4bit:
             kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_quant_type="nf4",
+                llm_int8_skip_modules=skip,
             )
-            print("Using 4-bit quantization (pinned to GPU 0)")
+            print("Using 4-bit quantization (pinned to GPU 0, heads kept FP16)")
         else:
-            kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-            print("Using 8-bit quantization (pinned to GPU 0)")
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_skip_modules=skip,
+            )
+            print("Using 8-bit quantization (pinned to GPU 0, heads kept FP16)")
         kwargs["device_map"] = {"": 0}
 
     model = MedusaModel.from_pretrained(medusa_model_id, **kwargs)
