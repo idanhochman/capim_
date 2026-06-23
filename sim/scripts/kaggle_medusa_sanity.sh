@@ -22,8 +22,16 @@ cd "$REPO_ROOT"
 echo "==> repo root: $REPO_ROOT"
 
 # --- python dependencies -----------------------------------------------------
+# IMPORTANT runtime requirements (learned the hard way):
+#   * GPU must be >= sm_75 (Turing). A Kaggle P100 is sm_60 and is NOT supported
+#     by Kaggle's PyTorch or by bitsandbytes 4-bit -> use "GPU T4 x2" instead.
+#   * transformers MUST be pinned < 4.50. The vendored EAGLE/Medusa modeling code
+#     is incompatible with the >=4.50 weight-loader rewrite (it throws
+#     "AttributeError: `weight` is not an nn.Module" under 4-bit quantization).
+#     4.36.2 is the Medusa/EAGLE-era known-good version; accelerate is pinned to
+#     a matching release so the old transformers imports cleanly.
 echo "==> installing python deps (this takes 1-2 min) ..."
-pip install bitsandbytes "transformers<5.0.0" accelerate datasets sentencepiece protobuf
+pip install "transformers==4.36.2" "accelerate==0.25.0" bitsandbytes datasets sentencepiece protobuf
 
 # --- runtime info ------------------------------------------------------------
 echo "==> GPU:";  nvidia-smi --query-gpu=name,memory.total --format=csv || echo "  (no nvidia-smi / no GPU)"
