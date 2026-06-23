@@ -229,7 +229,12 @@ def load_eagle_model(
         "top_k": 10,             # top-k per draft step
         "torch_dtype": torch.float16,
         "low_cpu_mem_usage": True,
-        "device_map": "auto",
+        # Pin the WHOLE model to a single GPU. The vendored EAGLE/Medusa modeling
+        # code (manual KV cache + tree attention) is NOT written for model
+        # parallelism: with device_map="auto" on a multi-GPU box (e.g. Kaggle
+        # T4 x2) accelerate shards across cuda:0/cuda:1 and every forward dies with
+        # "Expected all tensors to be on the same device ... mat2 is on cuda:0".
+        "device_map": {"": 0},
         # Force safetensors (memory-mapped) over .bin to avoid the ~10GB CPU-RAM
         # spike that OOM-kills the base-model load on a 12.7GB T4.  EaModel
         # forwards **kwargs to the base-model from_pretrained.
@@ -301,8 +306,12 @@ def load_medusa_model(
     kwargs = {
         "torch_dtype": torch.float16,
         "low_cpu_mem_usage": True,
-        # Default to auto, but PIN to the GPU when quantizing (see below).
-        "device_map": "auto",
+        # Pin the WHOLE model to a single GPU (cuda:0). The vendored Medusa/EAGLE
+        # modeling code is NOT model-parallel: device_map="auto" on a multi-GPU
+        # box (Kaggle T4 x2) shards across cuda:0/cuda:1 and every forward dies
+        # with "Expected all tensors to be on the same device". The 4-bit branch
+        # below already pins to {"":0}; keep FP16 on one GPU too.
+        "device_map": {"": 0},
         # Force safetensors: the base repo ships both .bin and .safetensors, and
         # .bin deserializes the whole 10GB shard into CPU RAM before quantization
         # (OOM-kills a 12.7GB T4). safetensors memory-maps straight to the GPU.
