@@ -223,6 +223,10 @@ def load_eagle_model(
         "torch_dtype": torch.float16,
         "low_cpu_mem_usage": True,
         "device_map": "auto",
+        # Force safetensors (memory-mapped) over .bin to avoid the ~10GB CPU-RAM
+        # spike that OOM-kills the base-model load on a 12.7GB T4.  EaModel
+        # forwards **kwargs to the base-model from_pretrained.
+        "use_safetensors": True,
         "use_eagle3": False,     # use EAGLE-2 (not EAGLE-3)
     }
 
@@ -282,6 +286,10 @@ def load_medusa_model(
         "torch_dtype": torch.float16,
         "low_cpu_mem_usage": True,
         "device_map": "auto",
+        # Force safetensors: the base repo ships both .bin and .safetensors, and
+        # .bin deserializes the whole 10GB shard into CPU RAM before quantization
+        # (OOM-kills a 12.7GB T4). safetensors memory-maps straight to the GPU.
+        "use_safetensors": True,
     }
     if load_in_4bit:
         kwargs["load_in_4bit"] = True
