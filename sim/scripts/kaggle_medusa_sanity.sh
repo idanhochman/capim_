@@ -38,14 +38,19 @@ echo "==> GPU:";  nvidia-smi --query-gpu=name,memory.total --format=csv || echo 
 echo "==> RAM:";  free -h
 
 # --- MEDUSA sanity run -------------------------------------------------------
+# 8-bit (LLM.int8): FP16 Vicuna-7B + Medusa's 5 vocab heads is ~14.4GB and does
+# NOT fit a single 14.56GB T4 (OOMs on load, and leaves nothing for KV-cache).
+# Multi-GPU sharding is impossible (custom modeling isn't model-parallel). 8-bit
+# is ~8GB (fits with ~6GB headroom) and is near-lossless, so the confidence
+# scores still track FP16. Use the SAME precision for EAGLE to keep it symmetric.
 echo "==> running MEDUSA sanity collection (python -u, live output) ..."
 python -u sim/scripts/collect_traces.py \
-    --model-family vicuna7b --method medusa --sanity
+    --model-family vicuna7b --method medusa --sanity --load-in-8bit
 
 echo ""
 echo "==> DONE. Inspect the saved sanity trace under traces/ ."
-echo "    If it loaded past quantization and has steps, run the 4 real collections:"
-echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method eagle  --dataset alpaca --n-prompts 200 --load-in-4bit"
-echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method eagle  --dataset gsm8k  --n-prompts 200 --load-in-4bit"
-echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method medusa --dataset alpaca --n-prompts 200 --load-in-4bit"
-echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method medusa --dataset gsm8k  --n-prompts 200 --load-in-4bit"
+echo "    If it loaded and has steps > 0, run the 4 real collections (also 8-bit):"
+echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method eagle  --dataset alpaca --n-prompts 200 --load-in-8bit"
+echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method eagle  --dataset gsm8k  --n-prompts 200 --load-in-8bit"
+echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method medusa --dataset alpaca --n-prompts 200 --load-in-8bit"
+echo "      python -u sim/scripts/collect_traces.py --model-family vicuna7b --method medusa --dataset gsm8k  --n-prompts 200 --load-in-8bit"
