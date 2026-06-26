@@ -164,7 +164,8 @@ def test_dtp_topL_ancestor_closed():
         kept = {(n.depth, n.layer_idx) for n in ranked[:L]}
         for n in ranked[:L]:
             if n.depth > 0:
-                assert (n.depth - 1, n.parent_idx) in kept, \
+                par = step.nodes[n.parent_idx]   # parent_idx is a GLOBAL index
+                assert (par.depth, par.layer_idx) in kept, \
                     f"L={L}: parent of {(n.depth, n.layer_idx)} not kept"
 
 

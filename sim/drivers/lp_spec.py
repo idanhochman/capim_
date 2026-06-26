@@ -78,6 +78,7 @@ def simulate(model: ModelConfig, trace: TraceDataset, config: LPSpecConfig = Non
 
     for t, step in enumerate(trace.steps):
         kp = lp_spec_dtp.k_pred_map(step)
+        pp = lp_spec_dtp.parent_pos_map(step)
 
         # 1. MEDUSA draft: K parallel heads on the NPU (free tail, no crossings)
         heads = build_medusa_draft(model, medusa_num_heads=config.medusa_num_heads)
@@ -85,7 +86,7 @@ def simulate(model: ModelConfig, trace: TraceDataset, config: LPSpecConfig = Non
         draft = compose_sequential(heads, npu, pim, count_crossings=False)
 
         # 2. DTP select (causal: history < t only; step 0 = full-tree cold start)
-        kept = lp_spec_dtp.select_kept(step, t, config.L, config.selection, hist, kp)
+        kept = lp_spec_dtp.select_kept(step, t, config.L, config.selection, hist, kp, pp)
         m = max(1, len(kept))
 
         # 3. concurrent verify over the kept tree
@@ -131,6 +132,6 @@ def simulate(model: ModelConfig, trace: TraceDataset, config: LPSpecConfig = Non
         ))
 
         # 5. fold step t into the histogram (AFTER costing -> strict causality)
-        hist.update(step, kp)
+        hist.update(step, kp, pp)
 
     return result

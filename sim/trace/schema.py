@@ -30,8 +30,13 @@ class TokenNode:
     token_id: int           # vocabulary index of this draft token
     log_prob: float         # per-token log-softmax probability at this depth
     cumulative_log_prob: float  # sum of log_probs along the path root → this node
-    parent_idx: int         # index of this node's parent in the previous layer's node list
-                            # (−1 for depth-0 nodes whose parent is the true accepted token)
+    parent_idx: int         # GLOBAL index of this node's parent within the step's
+                            # `nodes` list (i.e. nodes[parent_idx] is the parent).
+                            # NOT a within-layer index.  (−1 for depth-0 nodes whose
+                            # parent is the true accepted token / root.)  This is the
+                            # canonical convention: both collectors emit it (parent =
+                            # ancestors[-2]-1 in node space) and all consumers must
+                            # resolve the parent through nodes[parent_idx].
     accepted: bool          # True if the target model accepted this exact token
 
     # Position within its layer (used by scheduler to reconstruct tree structure)
@@ -216,16 +221,19 @@ def make_synthetic_trace(
     for i in range(n_steps):
         nodes = []
         global_idx = 0
+        prev_layer_global: List[int] = []   # GLOBAL indices of the depth-(d-1) nodes
         for d in range(max_depth):
             n_nodes = nodes_per_depth if d < max_depth - 1 else tree_size - global_idx
             n_nodes = max(1, n_nodes)
-            layer_size_prev = nodes_per_depth if d > 0 else 1
+            cur_layer_global: List[int] = []
             for j in range(n_nodes):
                 # Sample a per-token log probability (log-softmax: negative)
                 lp = -abs(rng.gauss(2.0, 1.5))
                 # Cumulative log prob: sum from root
                 cum_lp = lp * (d + 1) + rng.gauss(0, 0.2)  # approximate
-                parent = rng.randint(0, layer_size_prev - 1) if d > 0 else -1
+                # parent_idx is a GLOBAL index into the node list (see TokenNode);
+                # depth-0 nodes have parent_idx == -1 (root).
+                parent = rng.choice(prev_layer_global) if d > 0 else -1
                 accepted = rng.random() < acceptance_rate
                 nodes.append(
                     TokenNode(
@@ -238,7 +246,9 @@ def make_synthetic_trace(
                         layer_idx=j,
                     )
                 )
+                cur_layer_global.append(global_idx)
                 global_idx += 1
+            prev_layer_global = cur_layer_global
 
         accepted_len = max(1, int(rng.gauss(2.5, 1.0)))
         steps.append(
@@ -347,32 +357,40 @@ def make_synthetic_medusa_trace(
         layer_paths[len(p) - 1].append(p)
 
     # Build a static node template (structure is identical across steps).
-    # template[i] = (depth, layer_idx, parent_idx, k_pred)
-    template = []
+    # template[i] = (depth, layer_idx, parent_global_idx, k_pred), where the GLOBAL
+    # index of a node == its position in `template` (appended in depth-ascending
+    # order).  parent_global_idx follows the canonical TokenNode convention: it is a
+    # GLOBAL index into the node list (-1 for depth-0 nodes whose parent is the root).
     path_to_layeridx: Dict[tuple, int] = {}
+    pos_to_global: Dict[tuple, int] = {}
+    g = 0
     for d in range(max_d + 1):
         for li, p in enumerate(layer_paths[d]):
             path_to_layeridx[tuple(p)] = li
+            pos_to_global[(d, li)] = g
+            g += 1
+    template = []
     for d in range(max_d + 1):
         for li, p in enumerate(layer_paths[d]):
             if d == 0:
-                parent_idx = -1
+                parent_global = -1
             else:
-                parent_idx = path_to_layeridx[tuple(p[:-1])]
-            template.append((d, li, parent_idx, p[-1]))
+                parent_layer_idx = path_to_layeridx[tuple(p[:-1])]
+                parent_global = pos_to_global[(d - 1, parent_layer_idx)]
+            template.append((d, li, parent_global, p[-1]))
 
-    # children[(depth, parent_idx)] = list of (global_idx, k_pred, layer_idx)
+    # children[(depth, parent_global_idx)] = list of (global_idx, k_pred, layer_idx)
     children: Dict[tuple, List[tuple]] = {}
-    for gidx, (d, li, parent_idx, k) in enumerate(template):
-        children.setdefault((d, parent_idx), []).append((gidx, k, li))
+    for gidx, (d, li, parent_global, k) in enumerate(template):
+        children.setdefault((d, parent_global), []).append((gidx, k, li))
 
     steps = []
     for i in range(n_steps):
         # Decide the accepted path (connected chain from the root).
         accepted_ids = set()
-        parent_layer_idx = -1
+        parent_key = -1   # GLOBAL index of the accepted parent (-1 = root)
         for d in range(max_d + 1):
-            sibs = children.get((d, parent_layer_idx))
+            sibs = children.get((d, parent_key))
             if not sibs:
                 break
             if rng.random() > base_accept_prob * (depth_decay ** d):
@@ -389,19 +407,18 @@ def make_synthetic_medusa_trace(
                     break
             gidx, _, li = chosen
             accepted_ids.add(gidx)
-            parent_layer_idx = li
+            parent_key = gidx
 
         # Materialise nodes with plausible (unused-by-DTP) confidence values.
         nodes: List[TokenNode] = []
         cum_by_gidx: Dict[int, float] = {}
-        for gidx, (d, li, parent_idx, k) in enumerate(template):
+        for gidx, (d, li, parent_global, k) in enumerate(template):
             lp = -0.3 - 0.7 * k + rng.gauss(0, 0.1)
             lp = min(lp, -1e-4)
             if d == 0:
                 cum = lp
             else:
-                # parent global idx = the depth-(d-1) node with layer_idx==parent_idx
-                cum = cum_by_gidx[_parent_global_idx(template, d, parent_idx)] + lp
+                cum = cum_by_gidx[parent_global] + lp   # parent_global is the GLOBAL idx
             cum_by_gidx[gidx] = cum
             nodes.append(
                 TokenNode(
@@ -409,7 +426,7 @@ def make_synthetic_medusa_trace(
                     token_id=rng.randint(0, 31999),
                     log_prob=lp,
                     cumulative_log_prob=cum,
-                    parent_idx=parent_idx,
+                    parent_idx=parent_global,
                     accepted=(gidx in accepted_ids),
                     layer_idx=li,
                 )
@@ -440,15 +457,3 @@ def make_synthetic_medusa_trace(
     )
     td.compute_summary()
     return td
-
-
-def _parent_global_idx(template, depth: int, parent_layer_idx: int) -> int:
-    """Global node index of the depth-(depth-1) node with the given layer_idx.
-
-    Nodes in `template` are grouped by depth ascending, so we scan the previous
-    depth layer for the matching layer_idx.
-    """
-    for gidx, (d, li, _parent, _k) in enumerate(template):
-        if d == depth - 1 and li == parent_layer_idx:
-            return gidx
-    raise ValueError(f"no parent at depth {depth - 1} with layer_idx {parent_layer_idx}")

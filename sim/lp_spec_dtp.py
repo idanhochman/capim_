@@ -66,6 +66,23 @@ def k_pred_map(step: DecodeStepTrace) -> Dict[Pos, int]:
     return k_pred
 
 
+def parent_pos_map(step: DecodeStepTrace) -> Dict[Pos, Pos]:
+    """Map each node's Pos -> its parent's Pos, resolving `parent_idx` (a GLOBAL
+    index into `step.nodes`; see schema.TokenNode) through the actual parent node.
+
+    This is the ONLY place that interprets the raw `parent_idx` integer, so the
+    rest of the DTP is convention-independent: it works whatever `parent_idx`
+    indexes, as long as `nodes[parent_idx]` is the parent.  Depth-0 nodes have no
+    entry (their parent is the always-accepted root).
+    """
+    pos: Dict[Pos, Pos] = {}
+    for n in step.nodes:
+        if n.depth > 0:
+            par = step.nodes[n.parent_idx]
+            pos[(n.depth, n.layer_idx)] = (par.depth, par.layer_idx)
+    return pos
+
+
 def assert_sibling_rank_order(step: DecodeStepTrace) -> None:
     """Assert siblings appear in ascending layer_idx == ascending derived rank,
     so deriving k_pred from parent_idx is valid (handover §5 disclosed assumption 5).
@@ -108,18 +125,21 @@ class DTPHist:
             return 1.0                            # unseen -> prior = full tree (keep)
         return c[0] / c[1]
 
-    def update(self, step: DecodeStepTrace, kp: Dict[Pos, int] = None) -> None:
+    def update(self, step: DecodeStepTrace, kp: Dict[Pos, int] = None,
+               pp: Dict[Pos, Pos] = None) -> None:
         """Fold one step's observations in, counting a node only if reachable
         (its parent was accepted; depth-0 nodes hang off the always-accepted root).
         """
         if kp is None:
             kp = k_pred_map(step)
+        if pp is None:
+            pp = parent_pos_map(step)
         accepted_at: Dict[Pos, bool] = {(n.depth, n.layer_idx): n.accepted for n in step.nodes}
         for n in step.nodes:
             if n.depth == 0:
                 reachable = True
             else:
-                reachable = accepted_at.get((n.depth - 1, n.parent_idx), False)
+                reachable = accepted_at.get(pp[(n.depth, n.layer_idx)], False)
             if not reachable:
                 continue
             key = self._keyfn(n, kp)
@@ -130,7 +150,8 @@ class DTPHist:
 
 
 def score_nodes(step: DecodeStepTrace, hist: DTPHist,
-                kp: Dict[Pos, int] = None) -> Tuple[List[TokenNode], Dict[Pos, float]]:
+                kp: Dict[Pos, int] = None,
+                pp: Dict[Pos, Pos] = None) -> Tuple[List[TokenNode], Dict[Pos, float]]:
     """Score every node by the path-product ∏ p along root→node, then return the
     nodes sorted for the greedy top-L selection.
 
@@ -141,6 +162,8 @@ def score_nodes(step: DecodeStepTrace, hist: DTPHist,
     """
     if kp is None:
         kp = k_pred_map(step)
+    if pp is None:
+        pp = parent_pos_map(step)
     keyfn = hist._keyfn
     by_pos: Dict[Pos, TokenNode] = {(n.depth, n.layer_idx): n for n in step.nodes}
     score: Dict[Pos, float] = {}
@@ -149,7 +172,7 @@ def score_nodes(step: DecodeStepTrace, hist: DTPHist,
         if n.depth == 0:
             score[(n.depth, n.layer_idx)] = p
         else:
-            parent_score = score[(n.depth - 1, n.parent_idx)]
+            parent_score = score[pp[(n.depth, n.layer_idx)]]
             score[(n.depth, n.layer_idx)] = parent_score * p
     ranked = sorted(step.nodes,
                     key=lambda n: (-score[(n.depth, n.layer_idx)], n.depth, n.layer_idx))
@@ -177,7 +200,8 @@ def effective_accept(step: DecodeStepTrace, kept: set) -> int:
 
 
 def select_kept(step: DecodeStepTrace, t: int, L: int, selection: str,
-                hist: DTPHist, kp: Dict[Pos, int] = None) -> set:
+                hist: DTPHist, kp: Dict[Pos, int] = None,
+                pp: Dict[Pos, Pos] = None) -> set:
     """Return the set of Pos verified at step `t` under `selection` at tree size L.
 
     Cold start: step 0 always verifies the full static tree (no history yet).
@@ -196,7 +220,7 @@ def select_kept(step: DecodeStepTrace, t: int, L: int, selection: str,
     if t == 0 or selection == "full":
         return all_pos
     if selection in ("greedy_headk", "greedy_node"):
-        ranked, _ = score_nodes(step, hist, kp)
+        ranked, _ = score_nodes(step, hist, kp, pp)
     elif selection == "first_l":
         ranked = sorted(step.nodes, key=lambda n: (n.depth, n.layer_idx))
     elif selection == "oracle":
