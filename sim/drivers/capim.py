@@ -60,8 +60,6 @@ def _generated_by_depth(step: DecodeStepTrace, sigma_th: float):
     check suffices.  Crucially this set *includes* the boundary nodes that fail
     the gate themselves but were still drafted once to be scored before their
     branch is killed -- the generation cost the proactive gate cannot avoid.
-    (The earlier _surviving_by_depth dropped these, under-counting draft work in
-    CAPIM's favour.)
     """
     if sigma_th == float("-inf"):
         out = {}
@@ -118,6 +116,25 @@ def simulate(
     for step in trace.steps:
         # 1-2. draft (gated) + prune
         draft = _draft_cost(model, step, config.sigma_th, config.all_npu, npu, pim)
+        # mu = VERIFY tree size = STRICT survivors (nodes that themselves pass the
+        # gate).  This deliberately differs from the DRAFT set (_generated_by_depth),
+        # which also includes the boundary nodes that were drafted+scored but failed
+        # the gate -- you must generate a node to score it, but a pruned node is not
+        # verified.  Monotonicity of cumulative_log_prob guarantees the survivor set
+        # is ancestor-closed, so this count is a valid connected pruned tree.
+        #
+        # TODO(verify-frontier): evaluate a variant that verifies ALL generated nodes
+        # (survivors + boundary), since they are already drafted+scored.  Rationale:
+        # PIM verify cost is quantized to ceil(m/N_ALU) passes (kernel/pim.py), so
+        # adding boundary nodes up to the next multiple of N_ALU is ~FREE, and any
+        # ACCEPTED boundary node (a gate false-negative) would be recovered ->
+        # longer accept, higher acceptance rate at ~zero extra PIM cost.  Open
+        # interactions to resolve before adopting: (a) the gate's role shifts from
+        # "save verification" to "save draft expansion" (narrative change); (b) mu is
+        # also the routing signal, so a larger verify-mu could tip a step over mu_th
+        # onto the costly NPU path -- likely want to ROUTE on survivor-mu but
+        # COST-verify on generated-mu (two mus); (c) only free within a pass -- if the
+        # frontier straddles a multiple of N_ALU it costs a full extra pass.
         if config.sigma_th == float("-inf"):
             mu = step.tree_size
         else:

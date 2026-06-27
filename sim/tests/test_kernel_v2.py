@@ -62,6 +62,25 @@ def test_eagle_draft_is_small_vs_verify():
     assert draft_flops < 0.2 * verify_flops
 
 
+def test_eagle_draft_has_single_norm():
+    """EAGLE's draft head layer is index 0, so input_layernorm is never built
+    (cnets1.py:399), and the head reads the layer output directly (no final norm).
+    Net: ONE RMSNorm in the draft block vs TWO in a full target layer.  Pins the
+    eagle_draft=True fix so build_decoder_layer can't silently re-inflate it."""
+    target = build_decoder_layer(LLAMA2_7B, m=8, ctx=256)
+    eagle_layer = build_decoder_layer(LLAMA2_7B, m=8, ctx=256, eagle_draft=True)
+    assert sum(1 for l in target if l.type == LayerType.NORM) == 2
+    assert sum(1 for l in eagle_layer if l.type == LayerType.NORM) == 1
+    # the kept norm is the post-attention one (norm1), not the trailing norm2
+    assert [l.name for l in eagle_layer if l.type == LayerType.NORM] == ["norm1"]
+    # full draft step: exactly one NORM, and ff3 -> lm_head is contiguous (no norm
+    # between the layer output and the head -> no spurious PIM<->NPU round-trip)
+    draft = build_eagle_draft_step(LLAMA2_7B, width=8, ctx=256)
+    assert sum(1 for l in draft if l.type == LayerType.NORM) == 1
+    names = [l.name for l in draft]
+    assert names[names.index("ff3") + 1] == "lm_head"
+
+
 def test_concurrent_gather_per_split_kernel():
     """compose_concurrent charges one DAU output-gather COMM per split kernel
     (every FC and attention MATMUL), r-weighted, in the comm energy slot only."""

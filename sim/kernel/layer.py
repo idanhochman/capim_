@@ -50,10 +50,10 @@ class Layer:
 
     name: str
     type: LayerType
-    m: int
-    n: int
-    k: int = 1
-    numOp: int = 1
+    m: int                               # rows of the output
+    n: int                               # columns of the output
+    k: int = 1                           # contraction dim
+    numOp: int = 1                       # how many times the op repeats
     dbyte: int = 1                       # 1 = INT8 (W8A8), 2 = FP16
     device: Optional[Device] = None
 

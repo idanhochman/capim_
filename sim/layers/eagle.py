@@ -35,8 +35,10 @@ def build_eagle_draft_step(model: ModelConfig, width: int, ctx: int) -> List[Lay
         # fusion FC: concat(token_embedding, previous_feature) -> hidden  (k = 2*d)
         Layer("fusion_fc", LayerType.FC, m=width, n=d, k=2 * d, dbyte=db),
     ]
-    # exactly one decoder layer (EAGLE head depth = 1)
-    layers += build_decoder_layer(model, m=width, ctx=ctx)
+    # exactly one decoder layer (EAGLE head depth = 1); eagle_draft drops the
+    # input_layernorm (head layer is index 0, cnets1.py:399) -> one RMSNorm, and
+    # the head reads the layer output directly (no final norm before lm_head).
+    layers += build_decoder_layer(model, m=width, ctx=ctx, eagle_draft=True)
     # vocab projection (shared target lm_head) + sampling softmax -> confidence
     layers.append(build_lm_head(model, m=width))
     layers.append(Layer("sample_softmax", LayerType.SOFTMAX, m=width,

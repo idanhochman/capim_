@@ -19,11 +19,22 @@ from sim.config.models import ModelConfig
 from sim.kernel.layer import Layer, LayerType
 
 
-def build_decoder_layer(model: ModelConfig, m: int, ctx: int) -> List[Layer]:
-    """One target decoder layer over `m` query tokens at KV context length `ctx`.
+def build_decoder_layer(model: ModelConfig, m: int, ctx: int,
+                        eagle_draft: bool = False) -> List[Layer]:
+    """One decoder layer over `m` query tokens at KV context length `ctx`.
 
     `m` = number of tokens processed this pass (prefill: lin; verify: tree size mu).
     `ctx` = KV-cache length the attention attends over.
+
+    `eagle_draft=True` emits the EAGLE draft head's single decoder layer instead
+    of a full target layer.  EAGLE's head layer is index 0, so its `input_layernorm`
+    is never constructed (cnets1.py:399-400 `if self.index != 0`), and the head
+    `Model` has no final norm -- the LM head is applied directly to the layer output
+    (cnets1.py:732 `head(out_hidden[0])`).  Net effect: ONE RMSNorm, not two.  In
+    this builder's ordering that is the trailing `norm2` (the kept `norm1` sits in
+    the post_attention_layernorm slot); dropping it also removes the spurious
+    PIM<->NPU round-trip before the lm_head.  The full target/verify path keeps
+    both norms (default).
     """
     d = model.d_model            # hidden / residual-stream width
     h = model.n_heads            # number of query heads (attention numOp)
@@ -37,7 +48,7 @@ def build_decoder_layer(model: ModelConfig, m: int, ctx: int) -> List[Layer]:
     # degree.  At mobile batch=1 tp_dense=1, so this reduces to 3*d.
     qkv_n = 3 * d
 
-    return [
+    layers = [
         Layer("qkv", LayerType.FC, m=m, n=qkv_n, k=d, dbyte=db),
         Layer("score", LayerType.MATMUL, m=m, n=ctx, k=dh, numOp=h, dbyte=db),
         Layer("softmax", LayerType.SOFTMAX, m=m, n=ctx, numOp=h, dbyte=db),
@@ -48,8 +59,10 @@ def build_decoder_layer(model: ModelConfig, m: int, ctx: int) -> List[Layer]:
         Layer("ff2", LayerType.FC, m=m, n=ff, k=d, dbyte=db),
         Layer("glu", LayerType.ACT, m=m, n=ff, dbyte=db),
         Layer("ff3", LayerType.FC, m=m, n=d, k=ff, dbyte=db),
-        Layer("norm2", LayerType.NORM, m=m, n=d, dbyte=db),
     ]
+    if not eagle_draft:
+        layers.append(Layer("norm2", LayerType.NORM, m=m, n=d, dbyte=db))
+    return layers
 
 
 def build_lm_head(model: ModelConfig, m: int) -> Layer:
