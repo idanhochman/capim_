@@ -89,7 +89,7 @@ def sweep_lp_spec_L(model: ModelConfig, trace: TraceDataset,
     def run(Ls):
         out = {}
         for L in Ls:
-            cfg = lp_spec_driver.LPSpecConfig(L=L, selection=selection)
+            cfg = lp_spec_driver.LPSpecConfig(L_spec=L, selection=selection)
             res = lp_spec_driver.simulate(model, trace, cfg, npu=npu, pim=pim)
             out[L] = summarize(res)
         return out

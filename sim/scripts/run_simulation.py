@@ -90,7 +90,7 @@ def main():
     results = [ar, en, cap]
     if mtrace is not None:
         lp = lp_spec.simulate(model, mtrace,
-                              lp_spec.LPSpecConfig(L=args.lp_L, selection=args.lp_selection))
+                              lp_spec.LPSpecConfig(L_spec=args.lp_L, selection=args.lp_selection))
         results.insert(2, lp)
 
     print(f"\n=== {dataset} ===")

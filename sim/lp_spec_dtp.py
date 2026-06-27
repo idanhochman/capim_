@@ -22,10 +22,20 @@ the trace — it is DERIVED from `parent_idx` here (siblings are stored contiguo
 in rank order; see schema.make_synthetic_medusa_trace / the real collector).
 
 Key modelling choices (handover §4):
-  - Reachable denominator: a node counts toward its (head, k) statistic only if its
-    PARENT was accepted (i.e. the node was actually reached).  Otherwise off-path
-    rejections wrongly blame the head's prediction.  Matches the papers' "accuracy
-    given you reached that position".
+  - Reachable denominator [INFERRED — not specified by either paper]: a node counts
+    toward its (head, k) statistic only if its PARENT was accepted (i.e. the node was
+    actually reached).  LP-Spec §V-A says only that p_i^k is tracked "based on
+    previous verification results" — it gives no denominator.  We chose `accepted /
+    reachable` because p_i^k is meant to be head i's per-position prediction accuracy
+    (MEDUSA §2.3.3, a_j^{(i_j)}), and at runtime you can only OBSERVE that accuracy
+    when verification actually reaches position i (the prefix was accepted).  The
+    alternative `accepted / steps` would count never-reached steps as failures,
+    conflating head i's accuracy with an upstream prefix failing — biasing p_i^k down,
+    worst for deep nodes.  Offline this issue is invisible (MEDUSA's calibration has
+    ground truth at every position, so all positions are "reached"); it is purely a
+    runtime correction.  Bonus: with the conditional p_i^k, the path product telescopes
+    by the chain rule to P(path accepted) EXACTLY — no independence assumption — so it
+    is at least as principled as MEDUSA's marginal product.
   - Unseen (head, k) → prior p = 1.0 ("full tree": keep it).  After step 0 (which
     verifies the full static tree) every reachable (head, k) at shallow depths is
     populated; deep (head, k) whose parents are rarely accepted stay at the prior,
@@ -123,7 +133,7 @@ class DTPHist:
         c = self.counts.get(key)
         if c is None or c[1] == 0:
             return 1.0                            # unseen -> prior = full tree (keep)
-        return c[0] / c[1]
+        return c[0] / c[1] # n_accepted/n_reachable
 
     def update(self, step: DecodeStepTrace, kp: Dict[Pos, int] = None,
                pp: Dict[Pos, Pos] = None) -> None:
@@ -138,15 +148,15 @@ class DTPHist:
         for n in step.nodes:
             if n.depth == 0:
                 reachable = True
-            else:
+            else: # a node counts only if its parent was accepted
                 reachable = accepted_at.get(pp[(n.depth, n.layer_idx)], False)
             if not reachable:
                 continue
             key = self._keyfn(n, kp)
-            c = self.counts.setdefault(key, [0, 0])
-            c[1] += 1
+            c = self.counts.setdefault(key, [0, 0]) # c = [n_accepted, n_reachable]
+            c[1] += 1 # n_reachable++
             if n.accepted:
-                c[0] += 1
+                c[0] += 1 # n_accepted++
 
 
 def score_nodes(step: DecodeStepTrace, hist: DTPHist,

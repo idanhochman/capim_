@@ -62,13 +62,41 @@ def test_eagle_draft_is_small_vs_verify():
     assert draft_flops < 0.2 * verify_flops
 
 
+def test_concurrent_gather_per_split_kernel():
+    """compose_concurrent charges one DAU output-gather COMM per split kernel
+    (every FC and attention MATMUL), r-weighted, in the comm energy slot only."""
+    from sim.drivers.base import compose_concurrent
+    npu, pim = MobileNPU(), LPDDR5PIM()
+    dec = build_decoder_layer(LLAMA2_7B, m=16, ctx=256)
+    n_split = sum(1 for l in dec if l.type in (LayerType.FC, LayerType.MATMUL))
+    c = compose_concurrent(dec, npu, pim)
+    # one crossing per split kernel (FC + attention MATMUL)
+    assert c.crossings == n_split
+    assert c.time_by_type.get("COMM", 0.0) > 0.0
+    # gather lands on PIM (external bus) and only in the comm energy slot
+    assert c.energy_j[3] > 0.0
+    # an NL-only list draws no gather (nothing is column-split)
+    nls = [l for l in dec if l.type in (LayerType.SOFTMAX, LayerType.ACT, LayerType.NORM)]
+    assert compose_concurrent(nls, npu, pim).crossings == 0
+
+
+def test_concurrent_gather_scales_with_pim_share():
+    """A stronger PIM takes a larger column share -> larger (1-r) output slice ->
+    larger gather (the gather moves PIM's produced slice to the NPU)."""
+    from sim.drivers.base import compose_concurrent
+    fc = [Layer("ff", LayerType.FC, m=16, n=11008, k=4096, dbyte=1)]
+    strong = compose_concurrent(fc, MobileNPU(), LPDDR5PIM())                  # default PIM
+    weak = compose_concurrent(fc, MobileNPU(), LPDDR5PIM(int8_gops=40.96e9))   # 10x weaker PIM
+    assert strong.time_by_type["COMM"] > weak.time_by_type["COMM"]
+
+
 def test_drivers_run_and_order():
     trace = make_synthetic_trace(n_steps=40, tree_size=24, acceptance_rate=0.35)
     mtrace = make_synthetic_medusa_trace(n_steps=40, tree_choices=VICUNA_7B_STAGE2)
     ar = autoregressive.simulate(LLAMA2_7B, trace)
     en = eagle_npu.simulate(LLAMA2_7B, trace)
     cap = capim.simulate(LLAMA2_7B, trace, capim.CapimConfig(sigma_th=-4.0, mu_th=4))
-    lp = lp_spec.simulate(LLAMA2_7B, mtrace, lp_spec.LPSpecConfig(L=16))
+    lp = lp_spec.simulate(LLAMA2_7B, mtrace, lp_spec.LPSpecConfig(L_spec=16))
     for r in (ar, en, cap, lp):
         assert len(r.steps) == 40
         s = summarize(r)
@@ -175,7 +203,7 @@ def test_dtp_effective_accept_monotone_and_bounded():
     Ls = [1, 2, 4, 8, 16, 32, tree_size]
     mean_tokens = []
     for L in Ls:
-        res = lp_spec.simulate(LLAMA2_7B, trace, lp_spec.LPSpecConfig(L=L))
+        res = lp_spec.simulate(LLAMA2_7B, trace, lp_spec.LPSpecConfig(L_spec=L))
         mean_tokens.append(summarize(res).mean_tokens)
     # realised accept is monotone non-decreasing in L
     assert mean_tokens == sorted(mean_tokens), mean_tokens
@@ -196,7 +224,7 @@ def test_dtp_oracle_full_bracket_greedy():
     L = 8
     def toks(sel):
         return summarize(lp_spec.simulate(
-            LLAMA2_7B, trace, lp_spec.LPSpecConfig(L=L, selection=sel))).mean_tokens
+            LLAMA2_7B, trace, lp_spec.LPSpecConfig(L_spec=L, selection=sel))).mean_tokens
     greedy = toks("greedy_headk")
     oracle = toks("oracle")
     full = toks("full")
