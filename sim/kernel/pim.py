@@ -2,8 +2,17 @@
 LPDDR5-PIM cost model (near-bank compute).
 
 Replaces PAPI's Ramulator-backed PIM timing with an analytical roofline:
-  FC / MATMUL:  time = max(flops / PIM_INT8_GOPS, traffic / PIM_INTERNAL_BW)
-Only FC / MATMUL / COMM run on PIM; nonlinear ops route to the NPU (cross-bank
+  FC / MATMUL:  time = max(ceil(m/N_ALU)*N_ALU * per_token_flops / PIM_INT8_GOPS,
+                          traffic / PIM_INTERNAL_BW)
+The N_ALU=4 ALUs are TOKEN-parallel (LP-Spec S V-B: T_PIM = N_params/BW x
+ceil(L_spec/N_ALU)), so the m-token batch is rounded up to a full ALU pass for the
+compute term: m=1..4 all cost one pass.  This is the batch=1 (autoregressive draft)
+and small-tree regime where the previous flat flops/GOPS under-charged PIM by up to
+N_ALU x.  NB: LP-Spec labels BW_PIM as the 51.2 TB/s internal BW, but plugging that
+literal is physically impossible (PIM ~1000x the NPU -> all-PIM, contradicts their
+own Fig 7); the operative rate is the COMPUTE bound GOPS/(2*N_ALU)=51.2 GB/s, which
+is what this flops/GOPS roofline computes.  Only FC / MATMUL / COMM run on PIM;
+nonlinear ops route to the NPU (cross-bank
 reduction wall, see nonlinear-placement-resolved) and are asserted out in cost().
 Per the LPDDR5-PIM ridge point (409.6 GOPS / 51.2 TB/s = 0.008 ops/byte), GEMV
 (intensity 2 ops/byte >> ridge) is COMPUTE-bound on PIM, so this normally reduces
@@ -23,6 +32,8 @@ External-bus traffic (COMM) is charged at the off-chip energy rate.
 
 from __future__ import annotations
 
+from math import ceil
+
 from sim.config.hardware import (
     MEM_INTERNAL_PJ_PER_BIT,
     MEM_OFFCHIP_PJ_PER_BIT,
@@ -30,6 +41,7 @@ from sim.config.hardware import (
     PIM_EXTERNAL_BW,
     PIM_INT8_GOPS,
     PIM_INTERNAL_BW,
+    PIM_NALU,
     pj_to_j,
 )
 from sim.kernel.device import (
@@ -56,11 +68,13 @@ class LPDDR5PIM(Device):
         internal_bw: float = PIM_INTERNAL_BW,
         external_bw: float = PIM_EXTERNAL_BW,
         crossing_latency_s: float = FIXED_CROSSING_LATENCY_S,
+        n_alu: int = PIM_NALU,
     ):
         self.int8_gops = int8_gops
         self.internal_bw = internal_bw
         self.external_bw = external_bw
         self.crossing_latency_s = crossing_latency_s
+        self.n_alu = n_alu
 
     def cost(self, layer: Layer) -> CostResult:
         if layer.type == LayerType.COMM:
@@ -77,7 +91,21 @@ class LPDDR5PIM(Device):
         # KV-cache for attention MATMUL); count all operands touched in-bank.
         traffic = in1 + in2 + out
 
-        compute_t = flops / (self.int8_gops * MAX_COMPUTE_UTIL)
+        # N_ALU token-batching (LP-Spec S V-B): the ALUs are token-parallel, so a
+        # weight pass serves up to n_alu draft tokens and verifying m tokens takes
+        # ceil(m/n_alu) passes.  Round the batch up to a full pass for the COMPUTE
+        # term only -> m=1..n_alu all cost one pass (batch=1 draft / small trees pay
+        # for n_alu lanes even when (n_alu-1) sit idle).  Energy stays on the true
+        # `flops` below: idle lanes do no MACs.  flops is linear in m, so scaling by
+        # m_eff/m pads it exactly; large-batch (prefill) m_eff~=m -> no change.
+        m = layer.m
+        if m > 0:
+            m_eff = ceil(m / self.n_alu) * self.n_alu
+            compute_flops = flops * (m_eff / m)
+        else:
+            compute_flops = flops
+
+        compute_t = compute_flops / (self.int8_gops * MAX_COMPUTE_UTIL)
         mem_t = traffic / (self.internal_bw * MAX_MEM_UTIL)
 
         if compute_t >= mem_t:

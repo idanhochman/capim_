@@ -114,8 +114,12 @@ PIM_FREQ_HZ: float = 200e6              # Hz
 # Capacity: 3 PIM ranks + 1 DRAM rank × 4 GB each = 16 GB
 PIM_CAPACITY_BYTES: float = 16e9        # bytes
 
-# Number of ALU units (NALU) per die; used for batch rounding in verification
-PIM_NALU: int = 1                        # treat as 1 for GEMV baseline; refine later
+# Number of ALUs per MPU (LP-Spec Table II: "four 32-wide ALUs per MPU").
+# The ALUs are TOKEN-parallel: one weight pass serves up to N_ALU draft tokens, so
+# verifying m tokens takes ceil(m/N_ALU) passes (LP-Spec S V-B: T_PIM = N_params/BW
+# x ceil(L_spec/N_ALU)).  kernel/pim.py rounds the batch up to a full pass for the
+# COMPUTE-TIME term, so m=1..4 all cost one pass (the small-tree / batch=1 regime).
+PIM_NALU: int = 4                        # four token-parallel ALUs per MPU
 
 # ---------------------------------------------------------------------------
 # Energy constants — see module docstring for full derivation
